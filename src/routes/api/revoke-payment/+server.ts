@@ -1,62 +1,62 @@
 import { json } from '@sveltejs/kit';
-import { APPS_SCRIPT_URL } from '$env/static/private';
+import { getScriptUrl } from '$lib/server/getScriptUrl';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ request }) => {
-    const url = APPS_SCRIPT_URL;
+	const body = await request.json();
+	const eventId = body.eventId ?? '1';
+	const { url, label, configured } = getScriptUrl(eventId);
 
-    if (!url || url === 'YOUR_GOOGLE_APPS_SCRIPT_URL_HERE') {
-        return json(
-            {
-                success: false,
-                message: 'APPS_SCRIPT_URL not configured. Set it in your .env file.'
-            },
-            { status: 500 }
-        );
-    }
+	if (!configured) {
+		return json(
+			{
+				success: false,
+				message: `APPS_SCRIPT_URL for "${label}" is not configured. Set it in your .env file.`
+			},
+			{ status: 500 }
+		);
+	}
 
-    try {
-        const body = await request.json();
-        const certId = body.certId?.trim();
+	try {
+		const certId = body.certId?.trim();
 
-        if (!certId) {
-            return json(
-                { success: false, message: 'certId is required' },
-                { status: 400 }
-            );
-        }
+		if (!certId) {
+			return json(
+				{ success: false, message: 'certId is required' },
+				{ status: 400 }
+			);
+		}
 
-        // Ensure we send 'revokePayment' action to Apps Script
-        const response = await fetch(url, {
-            method: 'POST',
-            redirect: 'follow',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'revokePayment', certId })
-        });
+		const response = await fetch(url, {
+			method: 'POST',
+			redirect: 'follow',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ action: 'revokePayment', certId })
+		});
 
-        const text = await response.text();
+		const text = await response.text();
 
-        if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
-            console.error(
-                'Apps Script returned HTML instead of JSON:',
-                text.substring(0, 200)
-            );
-            return json(
-                {
-                    success: false,
-                    message: 'Apps Script error. Please redeploy the script.'
-                },
-                { status: 502 }
-            );
-        }
+		if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
+			console.error(
+				'Apps Script returned HTML instead of JSON:',
+				text.substring(0, 200)
+			);
+			return json(
+				{
+					success: false,
+					message: 'Apps Script error. Please redeploy the script.'
+				},
+				{ status: 502 }
+			);
+		}
 
-        const data = JSON.parse(text);
-        return json(data);
-    } catch (error) {
-        console.error('Failed to revoke payment:', error);
-        return json(
-            { success: false, message: 'Failed to revoke payment' },
-            { status: 500 }
-        );
-    }
+		const data = JSON.parse(text);
+		return json(data);
+	} catch (error) {
+		console.error('Failed to revoke payment:', error);
+		return json(
+			{ success: false, message: 'Failed to revoke payment' },
+			{ status: 500 }
+		);
+	}
 };

@@ -1,22 +1,23 @@
 import { json } from '@sveltejs/kit';
-import { APPS_SCRIPT_URL } from '$env/static/private';
+import { getScriptUrl } from '$lib/server/getScriptUrl';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ request }) => {
-	const url = APPS_SCRIPT_URL;
+	const body = await request.json();
+	const eventId = body.eventId ?? '1';
+	const { url, label, configured } = getScriptUrl(eventId);
 
-	if (!url || url === 'YOUR_GOOGLE_APPS_SCRIPT_URL_HERE') {
+	if (!configured) {
 		return json(
 			{
 				success: false,
-				message: 'APPS_SCRIPT_URL not configured. Set it in your .env file.'
+				message: `APPS_SCRIPT_URL for "${label}" is not configured. Set it in your .env file.`
 			},
 			{ status: 500 }
 		);
 	}
 
 	try {
-		const body = await request.json();
 		const certId = body.certId?.trim();
 
 		if (!certId) {

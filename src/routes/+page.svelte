@@ -31,6 +31,14 @@
 	let isFullscreen = $state(false);
 	let facingMode = $state<'environment' | 'user'>('environment');
 
+	// Multi-event / multi-database support
+	const EVENTS = [
+		{ id: '1', label: 'Members' },
+		{ id: '2', label: 'Non-Members' },
+		{ id: '3', label: 'Students' }
+	];
+	let selectedEvent = $state('1');
+
 	// Payment Receipt Modal
 	let showPaymentModal = $state(false);
 	let selectedPaymentFileIds = $state<string[]>([]);
@@ -112,8 +120,9 @@
 	}
 
 	async function loadHistoricalScans() {
+		loadingHistory = true;
 		try {
-			const res = await fetch('/api/attendees');
+			const res = await fetch(`/api/attendees?eventId=${selectedEvent}`);
 			const data = await res.json();
 			const attendees: any[] = data.attendees ?? data.registered ?? [];
 			const attended = attendees
@@ -135,6 +144,11 @@
 		} finally {
 			loadingHistory = false;
 		}
+	}
+
+	function onEventChange() {
+		scanLog = [];
+		loadHistoricalScans();
 	}
 
 	async function startCamera() {
@@ -191,7 +205,7 @@
 			const res = await fetch('/api/mark-attendance', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ qrContent: decodedText })
+				body: JSON.stringify({ qrContent: decodedText, eventId: selectedEvent })
 			});
 			const data = await res.json();
 
@@ -329,6 +343,23 @@
 </svelte:head>
 
 <Navbar title="QR Scanner" />
+
+<!-- Event Selector Bar -->
+<div class="event-selector-bar">
+	<span class="event-selector-label">Database:</span>
+	<div class="event-tabs">
+		{#each EVENTS as event}
+			<button
+				class="event-tab"
+				class:active={selectedEvent === event.id}
+				onclick={() => { selectedEvent = event.id; onEventChange(); }}
+				id="event-tab-{event.id}"
+			>
+				{event.label}
+			</button>
+		{/each}
+	</div>
+</div>
 
 <main class="content">
 	<div class="page-container">
@@ -615,6 +646,59 @@
 		display: flex;
 		flex-direction: column;
 		background: var(--bg-primary);
+	}
+
+	/* === Event Selector Bar === */
+	.event-selector-bar {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 10px 20px;
+		background: var(--bg-secondary, #1a1a2e);
+		border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
+		flex-shrink: 0;
+	}
+
+	.event-selector-label {
+		font-size: 12px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-secondary, rgba(255,255,255,0.45));
+		white-space: nowrap;
+	}
+
+	.event-tabs {
+		display: flex;
+		gap: 6px;
+		flex-wrap: wrap;
+	}
+
+	.event-tab {
+		padding: 6px 16px;
+		border-radius: 20px;
+		border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+		background: transparent;
+		color: var(--text-secondary, rgba(255,255,255,0.55));
+		font-size: 13px;
+		font-weight: 500;
+		cursor: pointer;
+		transition: all 0.18s ease;
+		white-space: nowrap;
+	}
+
+	.event-tab:hover {
+		background: rgba(255,255,255,0.06);
+		color: var(--text-primary, #fff);
+		border-color: rgba(255,255,255,0.25);
+	}
+
+	.event-tab.active {
+		background: var(--accent-color, #800000);
+		border-color: var(--accent-color, #800000);
+		color: #fff;
+		font-weight: 600;
+		box-shadow: 0 2px 8px rgba(128,0,0,0.35);
 	}
 
 	.scanner-grid {
