@@ -206,24 +206,23 @@ function extractFullName(rowValues, cols) {
  * Run this function ONCE from the Apps Script editor to 
  * automatically set up the Form Submit trigger with correct permissions.
  */
-function setupTrigger() {
-  var sheet = SpreadsheetApp.getActive();
-  
-  // 1. Delete all existing onFormSubmit triggers to avoid duplicates
-  var triggers = ScriptApp.getProjectTriggers();
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === 'onFormSubmit') {
-      ScriptApp.deleteTrigger(triggers[i]);
-    }
+function sendEmailForActiveRow() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var row = sheet.getActiveRange().getRow();
+  var config = getSettings();
+
+  if (row <= 1) {
+    SpreadsheetApp.getUi().alert("Please select a valid data row.");
+    return;
   }
-  
-  // 2. Create a fresh trigger
-  ScriptApp.newTrigger('onFormSubmit')
-    .forSpreadsheet(sheet)
-    .onFormSubmit()
-    .create();
-    
-  SpreadsheetApp.getUi().alert("✅ Trigger setup successful! The automatic email will now generate PDFs properly.");
+
+  var result = processAndSendRegistrationEmail(sheet, row, config);
+
+  SpreadsheetApp.getUi().alert(
+    result.success 
+      ? "✅ Email sent successfully!" 
+      : "❌ Failed: " + result.error
+  );
 }
 
 function onFormSubmit(e) {
@@ -232,9 +231,19 @@ function onFormSubmit(e) {
   var config = getSettings();
   var sheet = e.range.getSheet();
   var row = e.range.getRow();
+  
+  // جلوگیری duplicate sending
+  var existingStatus = emailStatusCol !== -1 
+  ? String(sheet.getRange(row, emailStatusCol).getValue() || "") 
+  : "";
 
-  // Use the shared registration logic
+  if (existingStatus.indexOf("VERIFIED SENT") !== -1) {
+  Logger.log("Skipping already sent row " + row);
+  return { success: false, error: "Already sent" };
+}
+  // Use the shared registration logic  
   processAndSendRegistrationEmail(sheet, row, config);
+  
 }
 
 /**
@@ -269,7 +278,7 @@ function processAndSendRegistrationEmail(sheet, row, config) {
   }
 
   var email = String(sheet.getRange(row, emailCol).getValue() || "").trim();
-  var chapter = chapterCol !== -1 ? String(sheet.getRange(row, chapterCol).getValue() || "").trim() : "No Chapter";
+  var chapter = chapterCol !== -1 ? String(sheet.getRange(row, chapterCol).getValue() || "").trim() : " ";
 
   if (!name || !email) {
     Logger.log("ERROR: Name or Email is empty at row " + row);
@@ -692,8 +701,149 @@ function doPost(e) {
       }
     }
 
+    // ---- Update Attendance Status (Manual Override from Guest List) ----
+    if (action === "updateStatus") {
+      var certIdForUpdate = (data.certId || "").toString().trim();
+      var newStatus = (data.newStatus || "").toString().trim().toUpperCase(); // NONE | IN | OUT
+
+      if (!certIdForUpdate) {
+        lock.releaseLock();
+        return createJsonResponse({ success: false, message: "certId is required", name: "" });
+      }
+      if (["NONE", "IN", "OUT"].indexOf(newStatus) === -1) {
+        lock.releaseLock();
+        return createJsonResponse({ success: false, message: "newStatus must be NONE, IN, or OUT", name: "" });
+      }
+
+      var ssUpd = SpreadsheetApp.getActiveSpreadsheet();
+      var sheetTabUpd = config.REG_SHEET_TAB || "Form Responses 1";
+      var sheetUpd = ssUpd.getSheetByName(sheetTabUpd);
+      if (!sheetUpd) {
+        lock.releaseLock();
+        return createJsonResponse({ success: false, message: "Sheet not found", name: "" });
+      }
+
+      var colsUpd = getColumnMap(sheetUpd);
+      var certIdColUpd = findColumn(colsUpd, ["CERT_ID", "Certificate ID"]);
+      var statusColUpd = findColumn(colsUpd, ["STATUS", "Status", "Attendance Status"]);
+      var scanTimeColUpd = findColumn(colsUpd, ["SCAN_TIME", "Scan Time", "Check-in Time"]);
+      var statusOutColUpd = findColumn(colsUpd, ["STATUS_OUT", "Status Out"]);
+      var scanTimeOutColUpd = findColumn(colsUpd, ["SCAN_TIME_OUT", "Scan Time Out"]);
+
+      if (certIdColUpd === -1 || statusColUpd === -1) {
+        lock.releaseLock();
+        return createJsonResponse({ success: false, message: "CERT_ID or STATUS column not found", name: "" });
+      }
+
+      var valuesUpd = sheetUpd.getDataRange().getValues();
+      var foundUpd = false;
+      var attendeeNameUpd = "";
+
+      for (var i = 1; i < valuesUpd.length; i++) {
+        var rowCertIdUpd = String(valuesUpd[i][certIdColUpd - 1] || "").trim();
+        if (rowCertIdUpd && rowCertIdUpd === certIdForUpdate) {
+          foundUpd = true;
+          attendeeNameUpd = extractFullName(valuesUpd[i], colsUpd);
+
+          if (newStatus === "NONE") {
+            // Clear attendance entirely — reset back to QR SENT
+            sheetUpd.getRange(i + 1, statusColUpd).setValue("QR SENT");
+            if (scanTimeColUpd > 0)    sheetUpd.getRange(i + 1, scanTimeColUpd).setValue("");
+            if (statusOutColUpd > 0)   sheetUpd.getRange(i + 1, statusOutColUpd).setValue("");
+            if (scanTimeOutColUpd > 0) sheetUpd.getRange(i + 1, scanTimeOutColUpd).setValue("");
+
+          } else if (newStatus === "IN") {
+            // Mark as checked in (morning) only — use ATTENDED to match QR scan behavior
+            sheetUpd.getRange(i + 1, statusColUpd).setValue("ATTENDED");
+            if (scanTimeColUpd > 0) {
+              var existScanTime = valuesUpd[i][scanTimeColUpd - 1];
+              if (!existScanTime) sheetUpd.getRange(i + 1, scanTimeColUpd).setValue(new Date());
+            }
+            if (statusOutColUpd > 0)   sheetUpd.getRange(i + 1, statusOutColUpd).setValue("");
+            if (scanTimeOutColUpd > 0) sheetUpd.getRange(i + 1, scanTimeOutColUpd).setValue("");
+
+          } else if (newStatus === "OUT") {
+            // Mark as IN & OUT (both sessions done)
+            sheetUpd.getRange(i + 1, statusColUpd).setValue("ATTENDED");
+            if (scanTimeColUpd > 0) {
+              var existScanTimeIn = valuesUpd[i][scanTimeColUpd - 1];
+              if (!existScanTimeIn) sheetUpd.getRange(i + 1, scanTimeColUpd).setValue(new Date());
+            }
+            if (statusOutColUpd > 0) sheetUpd.getRange(i + 1, statusOutColUpd).setValue("OUT");
+            if (scanTimeOutColUpd > 0) {
+              var existScanTimeOut = valuesUpd[i][scanTimeOutColUpd - 1];
+              if (!existScanTimeOut) sheetUpd.getRange(i + 1, scanTimeOutColUpd).setValue(new Date());
+            }
+          }
+
+          SpreadsheetApp.flush();
+          Logger.log("Manual status update → " + newStatus + " for: " + attendeeNameUpd + " (" + rowCertIdUpd + ")");
+          break;
+        }
+      }
+
+      lock.releaseLock();
+      if (foundUpd) {
+        return createJsonResponse({ success: true, message: "Status updated to " + newStatus, name: attendeeNameUpd });
+      } else {
+        return createJsonResponse({ success: false, message: "Attendee not found for CERT_ID: " + certIdForUpdate, name: "" });
+      }
+    }
+
+    // ---- Clear All Attendance Status (Reset All) ----
+    if (action === "clearAllStatus") {
+      var ssClear = SpreadsheetApp.getActiveSpreadsheet();
+      var sheetTabClear = config.REG_SHEET_TAB || "Form Responses 1";
+      var sheetClear = ssClear.getSheetByName(sheetTabClear);
+      if (!sheetClear) {
+        lock.releaseLock();
+        return createJsonResponse({ success: false, message: "Sheet not found", name: "" });
+      }
+
+      var colsClear = getColumnMap(sheetClear);
+      var statusColClear = findColumn(colsClear, ["STATUS", "Status", "Attendance Status"]);
+      var scanTimeColClear = findColumn(colsClear, ["SCAN_TIME", "Scan Time", "Check-in Time"]);
+      var statusOutColClear = findColumn(colsClear, ["STATUS_OUT", "Status Out"]);
+      var scanTimeOutColClear = findColumn(colsClear, ["SCAN_TIME_OUT", "Scan Time Out"]);
+      var certIdColClear = findColumn(colsClear, ["CERT_ID", "Certificate ID"]);
+
+      if (statusColClear === -1) {
+        lock.releaseLock();
+        return createJsonResponse({ success: false, message: "STATUS column not found", name: "" });
+      }
+
+      var lastRow = sheetClear.getLastRow();
+      if (lastRow > 1) {
+        // We only clear rows that actually have a CERT_ID (valid registrants)
+        var valuesClear = sheetClear.getRange(2, 1, lastRow - 1, sheetClear.getLastColumn()).getValues();
+        
+        // Prepare arrays for batch updating to be much faster than row-by-row
+        var statusUpdates = [];
+        var clearUpdates = [];
+        for (var i = 0; i < lastRow - 1; i++) {
+          var hasCert = certIdColClear > 0 && String(valuesClear[i][certIdColClear - 1] || "").trim() !== "";
+          statusUpdates.push([hasCert ? "QR SENT" : valuesClear[i][statusColClear - 1]]);
+          clearUpdates.push([""]);
+        }
+
+        // Apply batch updates
+        sheetClear.getRange(2, statusColClear, lastRow - 1, 1).setValues(statusUpdates);
+        if (scanTimeColClear > 0) sheetClear.getRange(2, scanTimeColClear, lastRow - 1, 1).setValues(clearUpdates);
+        if (statusOutColClear > 0) sheetClear.getRange(2, statusOutColClear, lastRow - 1, 1).setValues(clearUpdates);
+        if (scanTimeOutColClear > 0) sheetClear.getRange(2, scanTimeOutColClear, lastRow - 1, 1).setValues(clearUpdates);
+
+        SpreadsheetApp.flush();
+      }
+
+      lock.releaseLock();
+      Logger.log("Cleared all attendance statuses for all registrants.");
+      return createJsonResponse({ success: true, message: "Successfully cleared all attendance data.", name: "" });
+    }
+
+
     // ---- Send Registration QR/ID to a single attendee ----
     if (action === "sendQrCode") {
+
       var attendeeEmail = (data.email || "").toString().trim();
       if (!attendeeEmail) {
         lock.releaseLock();
@@ -799,7 +949,7 @@ function doPost(e) {
           if (!attendeeNameCert) {
             attendeeNameCert = extractFullName(valuesCert[i], colsCert);
           }
-          var attendeeChapterCert = chapterColCert > 0 ? String(valuesCert[i][chapterColCert - 1] || "").trim() : "No Chapter";
+          var attendeeChapterCert = chapterColCert > 0 ? String(valuesCert[i][chapterColCert - 1] || "").trim() : " ";
 
           // 1. Check attendance status
           var attendStatus = preferredStatusFromCols(valuesCert[i], statusColsCert).toUpperCase();
@@ -1135,7 +1285,7 @@ function generateDocument(name, chapter, email, config, issueDate, certId, docTy
 
   name = name || "Unknown";
   email = email || "unknown@email.com";
-  chapter = chapter || "No Chapter";
+  chapter = chapter || " ";
   docType = docType || "Document";
   
   givenName = givenName || "";
@@ -2414,7 +2564,7 @@ function sendEmailToSelectedRow() {
 
   var cols = getColumnMap(sheet);
   var rowValues = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
-  
+
   var fullName = extractFullName(rowValues, cols);
   var emailCol = findColumn(cols, ["Email Address", "Email", "email address", "email"]);
 
@@ -2424,98 +2574,57 @@ function sendEmailToSelectedRow() {
   }
 
   var email = String(sheet.getRange(row, emailCol).getValue() || "").trim();
+
   if (!email) {
     SpreadsheetApp.getUi().alert("❌ No email found in this row.");
     return;
   }
 
-  // Get or Generate unique ID (required for ID template)
-  var certIdCol = findColumn(cols, ["CERT_ID", "Certificate ID", "CertID"]);
-  if (certIdCol === -1) {
-    certIdCol = sheet.getLastColumn() + 1;
-    sheet.getRange(1, certIdCol).setValue("CERT_ID");
-  }
-  var certId = String(sheet.getRange(row, certIdCol).getValue() || "").trim();
-  if (!certId) {
-    certId = "CERT-" + Utilities.getUuid().slice(0, 8).toUpperCase();
-    sheet.getRange(row, certIdCol).setValue(certId);
-  }
-
-  // Get Branding & Templates from Settings
+  // Get Branding Settings
   var eventName = config.EVENT_NAME || "MAIN CONFERENCE";
   var orgName = config.ORG_NAME || "";
   var eventDate = config.EVENT_DATE || "";
   var eventLocation = config.EVENT_LOCATION || "";
   var primaryColor = config.PRIMARY_COLOR || "#217d05";
-  var idTemplateId = config.ID_TEMPLATE_ID || config.ID_TEMPLATE || config["PAMET ID Template."];
-
-  // Get Chapter if available
-  var chapterCol = findColumn(cols, ["Chapter", "PAMET Chapter", "Local Chapter", "30TH PAMET NATIONAL", "Branch"]);
-  var chapter = chapterCol !== -1 ? String(sheet.getRange(row, chapterCol).getValue() || "").trim() : "No Chapter";
-
-  // 1. Generate ID Attachment if template exists
-  var attachments = [];
-  if (idTemplateId && idTemplateId.indexOf("PASTE_") === -1) {
-    try {
-      var issueDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-      
-      // Verification
-      if (!config.FOLDER_ID || config.FOLDER_ID.indexOf("PASTE_") !== -1) {
-        throw new Error("FOLDER_ID is missing or not set in Settings tab.");
-      }
-
-      var idResult = generateDocument(fullName, chapter, email, config, issueDate, certId, "ID", idTemplateId);
-      if (idResult && idResult.pdfBlob) {
-        attachments.push(idResult.pdfBlob);
-        Logger.log("Manual Email: ID PDF generated successfully for " + fullName);
-      } else {
-        throw new Error("Document generator returned an empty file.");
-      }
-    } catch (idErr) {
-      Logger.log("Manual Email: Failed to generate ID attachment: " + idErr);
-      SpreadsheetApp.getUi().alert("⚠️ ID Generation failed: " + idErr + "\n\nCheck your Settings tab for FOLDER_ID and ID_TEMPLATE_ID.");
-      return; // Stop if we can't generate the requested ID
-    }
-  } else {
-    SpreadsheetApp.getUi().alert("⚠️ ID_TEMPLATE_ID is missing in your Settings tab. Please add it first.");
-    return;
-  }
 
   var htmlBody =
-    '<div style="font-family: Arial, sans-serif; max-width:500px; margin:auto; border:1px solid #eee; border-radius: 8px; overflow: hidden;">' +
-    '<div style="background:' + primaryColor + '; padding:40px; text-align:center; color:white;">' +
-    '<h2 style="margin:0;">' + eventName + '</h2>' +
-    (orgName ? '<p style="margin:10px 0 0 0; opacity:0.9;">' + orgName + '</p>' : '') +
-    '</div>' +
-    '<div style="padding:25px; color: #444; line-height: 1.6;">' +
-    '<h3 style="color:' + primaryColor + '; margin-top:0;">Registration Confirmed</h3>' +
-    '<p>Hello <strong>' + fullName + '</strong>,</p>' +
-    '<p>Your registration has been successfully validated. Please find your <strong>Official ID Card</strong> attached to this email.</p>' +
-    (eventDate ? '<p style="margin-bottom:5px;"><strong>📅 Event Date:</strong> ' + eventDate + '</p>' : '') +
-    (eventLocation ? '<p style="margin-top:0;"><strong>📍 Location:</strong> ' + eventLocation + '</p>' : '') +
-    '<hr style="border:0; border-top:1px solid #eee; margin:20px 0;">' +
-    '<p style="text-align:center; font-size:14px; color:#888;">We look forward to seeing you!</p>' +
-    '</div>' +
+    '<div style="font-family: Arial, sans-serif; max-width:500px; margin:auto; border:1px solid #eee; border-radius:8px; overflow:hidden;">' +
+      '<div style="background:' + primaryColor + '; padding:40px; text-align:center; color:white;">' +
+        '<h2 style="margin:0;">' + eventName + '</h2>' +
+        (orgName ? '<p style="margin:10px 0 0 0; opacity:0.9;">' + orgName + '</p>' : '') +
+      '</div>' +
+      '<div style="padding:25px; color:#444; line-height:1.6;">' +
+        '<h3 style="color:' + primaryColor + '; margin-top:0;">Registration Confirmed</h3>' +
+        '<p>Hello <strong>' + fullName + '</strong>,</p>' +
+        '<p>Your <strong>registration</strong> has been successfully validated.</p>' +
+
+        '<p><strong>Event Date:</strong> ' + eventDate + '</p>' +
+        '<p><strong>Location:</strong> ' + eventLocation + '</p>' +
+
+        '<hr style="border:0; border-top:1px solid #eee; margin:20px 0;">' +
+        '<p style="text-align:center; font-size:14px; color:#888;">We look forward to seeing you!</p>' +
+      '</div>' +
     '</div>';
 
   try {
-    var emailOptions = {
-      htmlBody: htmlBody,
-      name: eventName
-    };
-    if (attachments.length > 0) {
-      emailOptions.attachments = attachments;
-    }
+    GmailApp.sendEmail(
+      email,
+      "Registration Confirmation - " + eventName,
+      "",
+      {
+        htmlBody: htmlBody,
+        name: eventName
+      }
+    );
 
-    GmailApp.sendEmail(email, "Registration Confirmation - " + eventName, "", emailOptions);
-    
-    // Update tracking if columns exist
+    // Update tracking if column exists
     var emailStatusCol = findColumn(cols, ["EMAIL_STATUS", "Email Status"]);
     if (emailStatusCol !== -1) {
       sheet.getRange(row, emailStatusCol).setValue("VALIDATED & SENT by Admin");
     }
 
-    SpreadsheetApp.getUi().alert("✅ Validation Email (with ID) sent to " + fullName);
+    SpreadsheetApp.getUi().alert("✅ Registration Confirmation sent to " + fullName);
+
   } catch (err) {
     SpreadsheetApp.getUi().alert("❌ Failed to send email: " + err);
   }
@@ -2605,3 +2714,235 @@ function checkEvaluationStatus(email, evalSheetId) {
   }
 }
 
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  
+  // Existing PAMET menu
+  ui.createMenu('🚀 PAMET Master Console')
+    .addItem('📧 Send Confirmation Email (Selected Row)', 'sendEmailToSelectedRow')
+    .addItem('🆔 Send QR & ID Email (Selected Row)', 'sendQrEmailToSelectedRow')
+    .addItem('🔍 Process Missing IDs (Highlighted Only)', 'processMissingCertIds')
+    .addSeparator()
+    .addItem('⚙️ Setup Form Trigger', 'setupTrigger')
+    .addItem('🧪 Run System Test', 'testSetup')
+    .addItem('📋 List All Sheets', 'listSheets')
+    .addSeparator()
+    .addItem('📨 Check Remaining Email Quota', 'checkRemainingEmailQuota')
+    .addToUi();
+
+  // Pre-Con menu
+  ui.createMenu('📧 Pre-Con Emails')
+    .addItem('🎟️ Send PRE-CON 1 Email (Selected Row)', 'sendPreCon1Email')
+    .addItem('🎟️ Send PRE-CON 2 Email (Selected Row)', 'sendPreCon2Email')
+    .addSeparator()
+    .addItem('📨 Check Remaining Email Quota', 'checkRemainingEmailQuota')
+    .addSeparator()
+    .addItem('ℹ️ Test Pre-Con Setup', 'testPreConSetup')
+    .addToUi();
+}
+
+/*************************************************
+ * CHECK REMAINING EMAIL QUOTA
+ *************************************************/
+
+function checkRemainingEmailQuota() {
+  
+  var remainingQuota = MailApp.getRemainingDailyQuota();
+  
+  var quotaMessage =
+    "📨 Remaining Daily Email Quota\n\n" +
+    "You can still send:\n\n" +
+    remainingQuota + " email(s) today.\n\n" +
+    "⚠️ Google quota resets every 24 hours.";
+
+  SpreadsheetApp.getUi().alert(
+    "Email Quota Status",
+    quotaMessage,
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+
+  Logger.log("Remaining Email Quota: " + remainingQuota);
+}
+
+/*************************************************
+ * PRE-CON CONFIGURATION (Dynamic Column Detection)
+ * Uses same robust detection as main system
+ *************************************************/
+
+function getPreConColumns(sheet) {
+  var cols = getColumnMap(sheet); // Reuse existing function!
+  
+  // Dynamic detection - works with ANY sheet layout
+  var emailCol = findColumn(cols, ["Email Address", "Email", "email address", "email"]);
+  var nameCol = findColumn(cols, ["Full Name", "Fullname", "Name", "Complete Name", "Participant"]);
+  var statusCol = findColumn(cols, ["Status", "EMAIL STATUS", "Pre-Con Status"]);
+  var sentAtCol = findColumn(cols, ["Sent At", "Email Sent At", "Date Sent"]);
+  
+  return {
+    email: emailCol,
+    name: nameCol,
+    status: statusCol || sheet.getLastColumn() + 1,
+    sentAt: sentAtCol || sheet.getLastColumn() + 2
+  };
+}
+
+/*************************************************
+ * PRE-CON 1 EMAIL (Kave 1)
+ *************************************************/
+
+function sendPreCon1Email() {
+  sendPreConEmail("PRE-CON 1", "Kave 1, Luxe Hotel Lobby");
+}
+
+/*************************************************
+ * PRE-CON 2 EMAIL (Kave 2) 
+ *************************************************/
+
+function sendPreCon2Email() {
+  sendPreConEmail("PRE-CON 2", "Kave 2, Luxe Hotel Lobby");
+}
+
+/*************************************************
+ * UNIVERSAL PRE-CON EMAIL FUNCTION
+ * Fully compatible with PAMET system
+ *************************************************/
+
+function sendPreConEmail(preConNumber, location) {
+  var config = getSettings(); // Reuse existing settings!
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var row = sheet.getActiveRange().getRow();
+
+  // Safety check
+  if (row === 1) {
+    SpreadsheetApp.getUi().alert("⚠️ Please select a valid data row (not header).");
+    return;
+  }
+
+  // Dynamic column detection (works with ANY sheet)
+  var cols = getPreConColumns(sheet);
+  var rowValues = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+  
+  var email = cols.email > 0 ? String(rowValues[cols.email - 1] || "").trim() : "";
+  var name = cols.name > 0 ? extractFullName(rowValues, getColumnMap(sheet)) : "";
+  
+  if (!email) {
+    SpreadsheetApp.getUi().alert("❌ No Email column found. Check your headers.");
+    return;
+  }
+  
+  if (!name) name = "Participant";
+
+  // Event details from Settings (or defaults)
+  var eventName = config.EVENT_NAME || "30th PAMET National Midyear Convention";
+  var eventDate = config.EVENT_DATE || "May 13, 2026";
+  
+  var subject = ` FREE SLOT - ${preConNumber} | ${eventName}`;
+
+  var htmlBody = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: linear-gradient(135deg, #217d05, #28a745); color: white; padding: 30px; text-align: center; border-radius: 12px 12px 0 0; }
+    .content { background: #f8f9fa; padding: 30px; border-radius: 0 0 12px 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+    .highlight { background: #fff3cd; padding: 15px; border-left: 5px solid #ffc107; margin: 20px 0; border-radius: 5px; }
+    .footer { text-align: center; font-size: 12px; color: #666; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; }
+    @media (max-width: 600px) { .header, .content { padding: 20px 15px; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2 style="margin: 0; font-size: 24px;"> FREE PRE-CON SLOT</h2>
+    <p style="margin: 5px 0 0 0; opacity: 0.9;">${eventName}</p>
+  </div>
+  
+  <div class="content">
+    <h3 style="color: #217d05; margin-top: 0;">Dear ${name},</h3>
+    
+    <p>We are <strong>thrilled to announce</strong> that you have earned a <strong>FREE SLOT</strong> for the PRE-CONVENTION session!</p>
+    
+    <div class="highlight">
+      <strong>${preConNumber}</strong><br>
+       <strong>${location}</strong><br>
+       <strong>MAY 13, 2026</strong><br>
+       <strong>8:00-11:30 AM</strong><br>
+       <strong>3 Approved CPD Units</strong>
+    </div>
+    
+    <p>We are looking forward to a productive morning of learning with you!</p>
+    
+    <p style="text-align: center; font-size: 14px; color: #217d05; font-weight: bold; margin: 25px 0;">
+      See you there, Colleagues!
+    </p>
+  </div>
+  
+  <div class="footer">
+    <p>${eventName} Team</p>
+  </div>
+</body>
+</html>`;
+
+  // Confirmation dialog
+  var ui = SpreadsheetApp.getUi();
+  var response = ui.alert(
+    `Send Pre-Con ${preConNumber}?`,
+    `📧 To: ${email}\n👤 ${name}\n📍 ${location}`,
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response !== ui.Button.YES) {
+    ui.alert("Cancelled.");
+    return;
+  }
+
+  try {
+    // Send beautiful HTML email
+    GmailApp.sendEmail(email, subject, "", {
+      htmlBody: htmlBody,
+      name: eventName
+    });
+
+    // Update/create status columns (auto-creates if missing)
+    if (cols.status === -1) {
+      sheet.getRange(1, sheet.getLastColumn() + 1).setValue("Pre-Con Status");
+      cols.status = sheet.getLastColumn();
+    }
+    if (cols.sentAt === -1) {
+      sheet.getRange(1, sheet.getLastColumn() + 1).setValue("Pre-Con Sent At");
+      cols.sentAt = sheet.getLastColumn();
+    }
+
+    sheet.getRange(row, cols.status).setValue(`PRE-CON ${preConNumber} SENT`);
+    sheet.getRange(row, cols.sentAt).setValue(new Date());
+
+    ui.alert(`✅ Pre-Con ${preConNumber} email sent successfully!\n\n📧 ${email}`);
+    
+  } catch (error) {
+    ui.alert(`❌ Failed to send: ${error.toString()}`);
+    Logger.log(`Pre-Con email error for ${email}: ${error}`);
+  }
+}
+
+/*************************************************
+ * PRE-CON SETUP TEST
+ *************************************************/
+
+function testPreConSetup() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var cols = getPreConColumns(sheet);
+  
+  Logger.log("=== PRE-CON SETUP TEST ===");
+  Logger.log("Sheet: " + sheet.getName());
+  Logger.log("Email Col: " + (cols.email > 0 ? cols.email : "NOT FOUND"));
+  Logger.log("Name Col: " + (cols.name > 0 ? cols.name : "NOT FOUND"));
+  Logger.log("Status Col: " + cols.status);
+  Logger.log("SentAt Col: " + cols.sentAt);
+  
+  var rowValues = sheet.getRange(2, 1, 1, sheet.getLastColumn()).getValues()[0];
+  Logger.log("Sample Row 2 - Email: " + (cols.email > 0 ? rowValues[cols.email-1] : "N/A"));
+  Logger.log("Sample Row 2 - Name: " + (cols.name > 0 ? extractFullName(rowValues, getColumnMap(sheet)) : "N/A"));
+  
+  SpreadsheetApp.getUi().alert("✅ Pre-Con setup OK!\nCheck View > Logs for details.");
+}

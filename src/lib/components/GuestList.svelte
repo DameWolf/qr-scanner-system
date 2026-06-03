@@ -1,11 +1,14 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { onMount, onDestroy } from 'svelte';
+	import * as XLSX from 'xlsx';
+
 
 	interface Guest {
 		name: string;
 		email: string;
 		type: string;
+		category: string;
 		certId: string;
 		scanTime: string | null;
 		signoutTime: string | null;
@@ -38,16 +41,12 @@
 	let guestForPayment = $state<Guest | null>(null);
 	let approvingCertId = $state<string | null>(null);
 	let revokingCertId = $state<string | null>(null);
-	let sendingCertificateEmail = $state<string | null>(null);
-	let sendingQrEmail = $state<string | null>(null);
 	let showSuccessToast = $state(false);
 	let successToastMessage = $state('');
-	let sendingAll = $state(false);
-	let sendingAllQr = $state(false);
-	let sendAllProgress = $state({ sent: 0, total: 0 });
-	let sendStatusList = $state<
-		Array<{ name: string; status: 'pending' | 'sending' | 'success' | 'failed' }>
-	>([]);
+	let updatingStatusCertId = $state<string | null>(null);
+	let clearingAllStatus = $state(false);
+	let showReportModal = $state(false);
+	let generatingReport = $state<'pdf' | 'xlsx' | null>(null);
 
 	// Mark as Paid modal (for Not Paid → open modal → Mark as Paid)
 	let showMarkPaidModal = $state(false);
@@ -192,198 +191,223 @@
 		}
 	}
 
-	async function sendCertificate(guest: Guest, event?: Event) {
-		if (event) {
-			event.stopPropagation();
-		}
-		if (!guest.email) return;
+	// ── Report Download ──────────────────────────────────────────────
 
-		sendingCertificateEmail = guest.email;
+	function getFamilyName(fullName: string): string {
+		// Extract last word of the full name as the family name for sorting
+		const parts = fullName.trim().split(/\s+/);
+		return parts[parts.length - 1]?.toLowerCase() ?? '';
+	}
+
+	function formatDatetime(iso: string | null): string {
+		if (!iso) return '';
 		try {
-			const res = await fetch('/api/send-certificate', {
+			const d = new Date(iso);
+			if (isNaN(d.getTime())) return iso;
+			return d.toLocaleString('en-US', {
+				year: 'numeric',
+				month: 'short',
+				day: '2-digit',
+				hour: '2-digit',
+				minute: '2-digit',
+				hour12: true
+			});
+		} catch {
+			return iso;
+		}
+	}
+
+	function formatPayment(proof: string): string {
+		if (!proof || proof === 'NOT PAID') return 'Not Paid';
+		if (proof === 'CASH PAID ONSITE') return 'Cash (Onsite)';
+		return 'Paid';
+	}
+
+	function buildReportRows() {
+		return [...guests]
+			.sort((a, b) => getFamilyName(a.name).localeCompare(getFamilyName(b.name)))
+			.map((g, idx) => ({
+				'#': idx + 1,
+				'Full Name': g.name,
+				'Email': g.email,
+				'Category': g.category || g.type || '',
+				'Payment': formatPayment(g.proofOfPayment),
+				'Check-In Time': formatDatetime(g.scanTime),
+				'Check-Out Time': formatDatetime(g.scanTimeOut)
+			}));
+	}
+
+	function downloadXLSX() {
+		generatingReport = 'xlsx';
+		try {
+			const rows = buildReportRows();
+			const ws = XLSX.utils.json_to_sheet(rows);
+
+			// Set column widths
+			ws['!cols'] = [
+				{ wch: 4 },  // #
+				{ wch: 30 }, // Full Name
+				{ wch: 32 }, // Email
+				{ wch: 14 }, // Category
+				{ wch: 14 }, // Payment
+				{ wch: 22 }, // Check-In Time
+				{ wch: 22 }  // Check-Out Time
+			];
+
+			const wb = XLSX.utils.book_new();
+			XLSX.utils.book_append_sheet(wb, ws, 'Attendance Report');
+			XLSX.writeFile(wb, 'attendance_report.xlsx');
+			showReportModal = false;
+		} finally {
+			generatingReport = null;
+		}
+	}
+
+	function downloadPDF() {
+		generatingReport = 'pdf';
+		try {
+			const rows = buildReportRows();
+			const now = new Date().toLocaleString('en-US', {
+				year: 'numeric', month: 'long', day: '2-digit',
+				hour: '2-digit', minute: '2-digit', hour12: true
+			});
+
+			const tableRows = rows
+				.map(
+					(r) =>
+						`<tr>
+							<td>${r['#']}</td>
+							<td>${r['Full Name']}</td>
+							<td>${r['Email']}</td>
+							<td>${r['Category']}</td>
+							<td class="pay-${r['Payment'].toLowerCase().replace(/[^a-z]/g, '')}">${r['Payment']}</td>
+							<td>${r['Check-In Time'] || '—'}</td>
+							<td>${r['Check-Out Time'] || '—'}</td>
+						</tr>`
+				)
+				.join('');
+
+			const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Attendance Report</title>
+<style>
+  @page { size: landscape; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; font-size: 10px; color: #222; }
+  .report-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 14px; border-bottom: 2px solid #800000; padding-bottom: 8px; }
+  .report-title { font-size: 18px; font-weight: bold; color: #800000; }
+  .report-meta { font-size: 9px; color: #666; text-align: right; }
+  .report-meta span { display: block; }
+  table { width: 100%; border-collapse: collapse; }
+  thead tr { background: #800000; color: white; }
+  thead th { padding: 7px 8px; text-align: left; font-size: 9.5px; font-weight: 700; letter-spacing: 0.3px; }
+  tbody tr:nth-child(even) { background: #fff0f0; }
+  tbody tr:nth-child(odd) { background: #ffffff; }
+  tbody td { padding: 6px 8px; border-bottom: 1px solid #f0c0c0; font-size: 9.5px; vertical-align: top; }
+  .pay-notpaid { color: #b91c1c; font-weight: 600; }
+  .pay-paid, .pay-cashonsite { color: #166534; font-weight: 600; }
+  .total-row { margin-top: 10px; font-size: 10px; color: #666; }
+</style>
+</head>
+<body>
+  <div class="report-header">
+    <div>
+      <div class="report-title">Attendance Report</div>
+      <div style="font-size:10px;color:#555;margin-top:2px;">Sorted A–Z by Family Name</div>
+    </div>
+    <div class="report-meta">
+      <span>Generated: ${now}</span>
+      <span>Total Registrants: ${rows.length}</span>
+    </div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:28px">#</th>
+        <th style="width:22%">Full Name</th>
+        <th style="width:24%">Email</th>
+        <th style="width:10%">Category</th>
+        <th style="width:10%">Payment</th>
+        <th style="width:17%">Check-In Time</th>
+        <th style="width:17%">Check-Out Time</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  <div class="total-row">Total: ${rows.length} registrant(s)</div>
+</body>
+</html>`;
+
+			const win = window.open('', '_blank');
+			if (win) {
+				win.document.write(html);
+				win.document.close();
+				win.focus();
+				setTimeout(() => { win.print(); }, 600);
+			}
+			showReportModal = false;
+		} finally {
+			generatingReport = null;
+		}
+	}
+
+	async function updateGuestStatus(guest: Guest, newStatus: 'NONE' | 'IN' | 'OUT', event: Event) {
+		event.stopPropagation();
+		if (!guest.certId || updatingStatusCertId === guest.certId) return;
+
+		updatingStatusCertId = guest.certId;
+		try {
+			const res = await fetch('/api/update-status', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ email: guest.email, name: guest.name })
+				body: JSON.stringify({ certId: guest.certId, newStatus })
 			});
 			const data = await res.json();
 			if (data.success) {
-				showSuccessNotification(`Certificate sent to ${guest.name}`);
+				// Optimistically update local state so UI responds instantly
+				guest.attended = newStatus !== 'NONE';
+				guest.statusOut = newStatus === 'OUT' ? 'OUT' : '';
+				const label = newStatus === 'NONE' ? 'None' : newStatus === 'OUT' ? 'IN & OUT' : 'IN';
+				showSuccessNotification(`Status updated to ${label} for ${guest.name}`);
+				// Refresh from server to sync timestamps
+				await loadGuests();
 			} else {
-				alert(data.message || 'Failed to send certificate');
+				alert(data.message || 'Failed to update status');
 			}
 		} catch (e) {
-			console.error('Failed to send certificate', e);
-			alert('Failed to send certificate');
+			console.error('Failed to update status', e);
+			alert('Failed to update status');
 		} finally {
-			sendingCertificateEmail = null;
+			updatingStatusCertId = null;
 		}
 	}
 
-	async function sendQrCode(guest: Guest, event?: Event) {
-		if (event) {
-			event.stopPropagation();
+	async function clearAllStatus() {
+		if (!confirm(`Are you sure you want to clear the attendance status for ALL registrants? This will reset everyone to "Not Attended" and clear their check-in times.\n\nThis action cannot be undone.`)) {
+			return;
 		}
-		if (!guest.email) return;
 
-		sendingQrEmail = guest.email;
+		clearingAllStatus = true;
 		try {
-			const res = await fetch('/api/send-qr', {
+			const res = await fetch('/api/clear-all-status', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ email: guest.email, name: guest.name })
+				headers: { 'Content-Type': 'application/json' }
 			});
 			const data = await res.json();
 			if (data.success) {
-				showSuccessNotification(`${data.message || 'QR/ID sent'} to ${guest.name}`);
+				showSuccessNotification('All attendance statuses have been cleared.');
+				await loadGuests();
 			} else {
-				alert(data.message || 'Failed to send QR/ID');
+				alert(data.message || 'Failed to clear statuses');
 			}
 		} catch (e) {
-			console.error('Failed to send QR/ID', e);
-			alert('Failed to send QR/ID');
+			console.error('Failed to clear statuses', e);
+			alert('Failed to clear statuses. Check console for details.');
 		} finally {
-			sendingQrEmail = null;
+			clearingAllStatus = false;
 		}
-	}
-
-	async function sendAllCertificates() {
-		const attendedGuestsWithEmail = filteredGuests.filter((g) => g.attended && g.email);
-
-		if (attendedGuestsWithEmail.length === 0) {
-			alert('No attended guests with email addresses found');
-			return;
-		}
-
-		const confirmed = confirm(
-			`Send certificate to ${attendedGuestsWithEmail.length} attended guest(s)?\n\nThis will send in batches of 3 emails every 10 seconds to avoid rate limits.`
-		);
-		if (!confirmed) return;
-
-		sendingAll = true;
-		sendAllProgress = { sent: 0, total: attendedGuestsWithEmail.length };
-		sendStatusList = attendedGuestsWithEmail.map((g) => ({ name: g.name, status: 'pending' }));
-
-		let successCount = 0;
-		let failCount = 0;
-		const BATCH_SIZE = 3;
-		const BATCH_DELAY = 10000;
-
-		for (let i = 0; i < attendedGuestsWithEmail.length; i += BATCH_SIZE) {
-			const batch = attendedGuestsWithEmail.slice(i, i + BATCH_SIZE);
-
-			const batchPromises = batch.map(async (guest, batchIndex) => {
-				const statusIndex = i + batchIndex;
-				sendStatusList[statusIndex].status = 'sending';
-
-				try {
-					const res = await fetch('/api/send-certificate', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ email: guest.email, name: guest.name })
-					});
-					const data = await res.json();
-
-					if (data.success) {
-						sendStatusList[statusIndex].status = 'success';
-						successCount++;
-					} else {
-						sendStatusList[statusIndex].status = 'failed';
-						failCount++;
-					}
-				} catch (e) {
-					console.error('Failed to send certificate to', guest.name, e);
-					sendStatusList[statusIndex].status = 'failed';
-					failCount++;
-				}
-
-				sendAllProgress.sent++;
-			});
-
-			await Promise.all(batchPromises);
-
-			if (i + BATCH_SIZE < attendedGuestsWithEmail.length) {
-				await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY));
-			}
-		}
-
-		sendingAll = false;
-		showSuccessNotification(
-			`Certificate sent to ${successCount} guest(s)${failCount > 0 ? `, ${failCount} failed` : ''}`
-		);
-
-		setTimeout(() => {
-			sendStatusList = [];
-		}, 5000);
-	}
-
-	async function sendAllQrCodes() {
-		const registeredGuestsWithEmail = filteredGuests.filter((g) => g.email);
-
-		if (registeredGuestsWithEmail.length === 0) {
-			alert('No guests with email addresses found');
-			return;
-		}
-
-		const confirmed = confirm(
-			`Send QR Code & ID to ${registeredGuestsWithEmail.length} guest(s)?\n\nThis will send in batches of 3 emails every 10 seconds to avoid rate limits.`
-		);
-		if (!confirmed) return;
-
-		sendingAllQr = true;
-		sendAllProgress = { sent: 0, total: registeredGuestsWithEmail.length };
-		sendStatusList = registeredGuestsWithEmail.map((g) => ({ name: g.name, status: 'pending' }));
-
-		let successCount = 0;
-		let failCount = 0;
-		const BATCH_SIZE = 3;
-		const BATCH_DELAY = 10000;
-
-		for (let i = 0; i < registeredGuestsWithEmail.length; i += BATCH_SIZE) {
-			const batch = registeredGuestsWithEmail.slice(i, i + BATCH_SIZE);
-
-			const batchPromises = batch.map(async (guest, batchIndex) => {
-				const statusIndex = i + batchIndex;
-				sendStatusList[statusIndex].status = 'sending';
-
-				try {
-					const res = await fetch('/api/send-qr', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ email: guest.email, name: guest.name })
-					});
-					const data = await res.json();
-
-					if (data.success) {
-						sendStatusList[statusIndex].status = 'success';
-						successCount++;
-					} else {
-						sendStatusList[statusIndex].status = 'failed';
-						failCount++;
-					}
-				} catch (e) {
-					console.error('Failed to send QR/ID to', guest.name, e);
-					sendStatusList[statusIndex].status = 'failed';
-					failCount++;
-				}
-
-				sendAllProgress.sent++;
-			});
-
-			await Promise.all(batchPromises);
-
-			if (i + BATCH_SIZE < registeredGuestsWithEmail.length) {
-				await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY));
-			}
-		}
-
-		sendingAllQr = false;
-		showSuccessNotification(
-			`QR/ID sent to ${successCount} guest(s)${failCount > 0 ? `, ${failCount} failed` : ''}`
-		);
-
-		setTimeout(() => {
-			sendStatusList = [];
-		}, 5000);
 	}
 
 	let attendedCount = $derived(guests.filter((g) => g.attended).length);
@@ -535,6 +559,7 @@
 							name: r.name || '',
 							email: r.email || '',
 							type: (r.type || r.participantType || r.category || '').trim(),
+							category: r.category || '',
 							certId: r.certId || '',
 							scanTime: (match ? match.scanTime || null : null) || r.scanTime || null,
 							attended:
@@ -550,6 +575,7 @@
 						name: a.name || '',
 						email: a.email || '',
 						type: (a.type || a.participantType || a.category || '').trim(),
+						category: a.category || '',
 						certId: a.certId || '',
 						scanTime: a.scanTime || null,
 						attended: true,
@@ -611,60 +637,39 @@
 				<div class="header-right">
 					<div class="header-actions">
 						<button
-							class="send-all-btn qr-theme"
-							disabled={sendingAllQr}
-							onclick={sendAllQrCodes}
-							aria-label="Send QR/ID to All Guests"
+							class="send-all-btn clear-all-btn"
+							disabled={clearingAllStatus}
+							onclick={clearAllStatus}
+							aria-label="Clear All Status"
+							title="Clear attendance for all guests"
 						>
-							{#if sendingAllQr}
+							{#if clearingAllStatus}
 								<span class="btn-spinner"></span>
-								Sending {sendAllProgress.sent}/{sendAllProgress.total}
+								Clearing...
 							{:else}
-								<svg
-									width="16"
-									height="16"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-								>
-									<rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-									<rect x="7" y="7" width="3" height="3" />
-									<rect x="14" y="7" width="3" height="3" />
-									<rect x="7" y="14" width="3" height="3" />
-									<rect x="14" y="14" width="3" height="3" />
+								<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+									<path d="M3 6h18"/>
+									<path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+									<line x1="10" y1="11" x2="10" y2="17"/>
+									<line x1="14" y1="11" x2="14" y2="17"/>
 								</svg>
-								Send All QR/IDs
+								Clear All Status
 							{/if}
 						</button>
 
 						<button
-							class="send-all-btn"
-							disabled={sendingAll}
-							onclick={sendAllCertificates}
-							aria-label="Send Certificate to All Attended Guests"
+
+						<button
+							class="download-report-btn"
+							onclick={() => (showReportModal = true)}
+							aria-label="Download Attendance Report"
 						>
-							{#if sendingAll}
-								<span class="btn-spinner"></span>
-								Sending {sendAllProgress.sent}/{sendAllProgress.total}
-							{:else}
-								<svg
-									width="16"
-									height="16"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-								>
-									<path d="M22 2L11 13" />
-									<path d="M22 2L15 22L11 13L2 9L22 2Z" />
-								</svg>
-								Send All Certificates
-							{/if}
+							<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+								<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+								<polyline points="7 10 12 15 17 10"/>
+								<line x1="12" y1="15" x2="12" y2="3"/>
+							</svg>
+							Download Report
 						</button>
 					</div>
 				</div>
@@ -815,10 +820,10 @@
 									<th class="col-num">#</th>
 									<th class="col-name">Name</th>
 									<th class="col-payment">Payment</th>
+									<th class="col-category">Category</th>
 									<th class="col-time">Time</th>
 									<th class="col-status">Status</th>
-									<th class="col-signout">Signed Out</th>
-									<th class="col-actions">Actions</th>
+									<th class="col-signout">ATTENDED</th>
 								</tr>
 							</thead>
 							<tbody>
@@ -866,85 +871,46 @@
 												<span class="payment-badge not-paid">Not Paid</span>
 											{/if}
 										</td>
+										<td class="col-category">
+											{#if guest.category === 'Member'}
+												<span class="category-badge member">Member</span>
+											{:else if guest.category === 'Non-Member'}
+												<span class="category-badge non-member">Non-Member</span>
+											{:else if guest.category === 'Student'}
+												<span class="category-badge student">Student</span>
+											{:else}
+												<span class="category-badge unknown">{guest.category || '—'}</span>
+											{/if}
+										</td>
 										<td class="col-time">
 											<span class="time-mobile">{formatTimeMobile(guest.scanTime)}</span>
 											<span class="time-desktop">{formatTimeDesktop(guest.scanTime)}</span>
 										</td>
 										<td class="col-status">
-											{#if guest.attended && guest.statusOut === 'OUT'}
-												<span class="status-badge attended">IN & OUT</span>
-											{:else if guest.attended}
-												<span class="status-badge in-only">IN</span>
-											{:else}
-												<span class="status-badge not-attended">Not Yet</span>
+											<select
+												class="status-select"
+												class:status-none={!guest.attended}
+												class:status-in={guest.attended && guest.statusOut !== 'OUT'}
+												class:status-out={guest.attended && guest.statusOut === 'OUT'}
+												disabled={updatingStatusCertId === guest.certId}
+												value={!guest.attended ? 'NONE' : guest.statusOut === 'OUT' ? 'OUT' : 'IN'}
+												onchange={(e) => updateGuestStatus(guest, (e.currentTarget as HTMLSelectElement).value as 'NONE' | 'IN' | 'OUT', e)}
+												onclick={(e) => e.stopPropagation()}
+											>
+												<option value="NONE">None</option>
+												<option value="IN">IN</option>
+												<option value="OUT">IN &amp; OUT</option>
+											</select>
+											{#if updatingStatusCertId === guest.certId}
+												<span class="status-saving">saving…</span>
 											{/if}
 										</td>
 										<td class="col-signout">
-											{#if guest.signoutTime}
+											{#if guest.statusOut === 'OUT'}
 												<span class="signout-badge signed-out">Yes</span>
-											{:else if guest.attended}
-												<span class="signout-badge not-signed-out">No</span>
 											{:else}
-												<span class="signout-badge na">-</span>
+												<span class="signout-badge not-signed-out">No</span>
 											{/if}
-										</td>
-										<td class="col-actions">
-											<div class="action-group">
-												<button
-													class="send-qr-btn"
-													disabled={sendingQrEmail === guest.email}
-													onclick={(e) => sendQrCode(guest, e)}
-													aria-label="Send QR/ID"
-												>
-													{#if sendingQrEmail === guest.email}
-														<span class="btn-spinner"></span>
-													{:else}
-														<svg
-															width="14"
-															height="14"
-															viewBox="0 0 24 24"
-															fill="none"
-															stroke="currentColor"
-															stroke-width="2"
-															stroke-linecap="round"
-															stroke-linejoin="round"
-														>
-															<rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-															<rect x="7" y="7" width="3" height="3" />
-															<rect x="14" y="7" width="3" height="3" />
-															<rect x="7" y="14" width="3" height="3" />
-															<rect x="14" y="14" width="3" height="3" />
-														</svg>
-														Send QR/ID
-													{/if}
-												</button>
-
-												<button
-													class="send-program-btn"
-													disabled={sendingCertificateEmail === guest.email}
-													onclick={(e) => sendCertificate(guest, e)}
-													aria-label="Send Certificate"
-												>
-													{#if sendingCertificateEmail === guest.email}
-														<span class="btn-spinner"></span>
-													{:else}
-														<svg
-															width="14"
-															height="14"
-															viewBox="0 0 24 24"
-															fill="none"
-															stroke="currentColor"
-															stroke-width="2"
-															stroke-linecap="round"
-															stroke-linejoin="round"
-														>
-															<path d="M22 2L11 13" />
-															<path d="M22 2L15 22L11 13L2 9L22 2Z" />
-														</svg>
-														Send Certificate
-													{/if}
-												</button>
-											</div>
 										</td>
 									</tr>
 								{/each}
@@ -1187,69 +1153,78 @@
 	</div>
 {/if}
 
-{#if sendingAll && sendStatusList.length > 0}
-	<div class="modal-backdrop">
-		<div class="modal-content send-status-modal">
-			<div class="modal-header">
-				<h3>Sending Program</h3>
-				<div class="send-progress-text">{sendAllProgress.sent} / {sendAllProgress.total}</div>
+
+<!-- ===== Report Download Modal ===== -->
+{#if showReportModal}
+	<div
+		class="report-modal-backdrop"
+		role="dialog"
+		aria-modal="true"
+		aria-label="Download attendance report"
+		onclick={() => (showReportModal = false)}
+		onkeydown={(e) => e.key === 'Escape' && (showReportModal = false)}
+		tabindex="-1"
+	>
+		<div class="report-modal" onclick={(e) => e.stopPropagation()}>
+			<div class="report-modal-header">
+				<div class="report-modal-title">
+					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+						<polyline points="14 2 14 8 20 8"/>
+						<line x1="16" y1="13" x2="8" y2="13"/>
+						<line x1="16" y1="17" x2="8" y2="17"/>
+						<polyline points="10 9 9 9 8 9"/>
+					</svg>
+					Download Attendance Report
+				</div>
+				<button class="report-modal-close" onclick={() => (showReportModal = false)} aria-label="Close">
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+				</button>
 			</div>
-			<div class="modal-body send-status-body">
-				<div class="send-status-list">
-					{#each sendStatusList as item}
-						<div
-							class="send-status-item"
-							class:pending={item.status === 'pending'}
-							class:sending={item.status === 'sending'}
-							class:success={item.status === 'success'}
-							class:failed={item.status === 'failed'}
-						>
-							<span class="status-name">{item.name}</span>
-							<span class="status-indicator">
-								{#if item.status === 'pending'}
-									<svg
-										width="16"
-										height="16"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										stroke-width="2"
-									>
-										<circle cx="12" cy="12" r="10" />
-									</svg>
-								{:else if item.status === 'sending'}
-									<span class="status-spinner"></span>
-								{:else if item.status === 'success'}
-									<svg
-										width="16"
-										height="16"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										stroke-width="2.5"
-										stroke-linecap="round"
-										stroke-linejoin="round"
-									>
-										<polyline points="20 6 9 17 4 12" />
-									</svg>
-								{:else if item.status === 'failed'}
-									<svg
-										width="16"
-										height="16"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										stroke-width="2.5"
-										stroke-linecap="round"
-										stroke-linejoin="round"
-									>
-										<line x1="18" y1="6" x2="6" y2="18" />
-										<line x1="6" y1="6" x2="18" y2="18" />
-									</svg>
-								{/if}
-							</span>
-						</div>
-					{/each}
+
+			<div class="report-modal-body">
+				<p class="report-modal-desc">
+					Generates a list of all <strong>{guests.length}</strong> registrants sorted <strong>A–Z by family name</strong>, including full name, email, category, payment status, check-in time, and check-out time.
+				</p>
+
+				<div class="report-format-grid">
+					<button
+						class="report-format-btn xlsx"
+						disabled={generatingReport !== null}
+						onclick={downloadXLSX}
+					>
+						{#if generatingReport === 'xlsx'}
+							<span class="btn-spinner"></span>
+						{:else}
+							<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+								<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+								<polyline points="14 2 14 8 20 8"/>
+								<line x1="8" y1="13" x2="16" y2="13"/>
+								<line x1="8" y1="17" x2="16" y2="17"/>
+								<polyline points="10 9 9 9 8 9"/>
+							</svg>
+						{/if}
+						<span class="format-label">Excel (.xlsx)</span>
+						<span class="format-sub">Spreadsheet format</span>
+					</button>
+
+					<button
+						class="report-format-btn pdf"
+						disabled={generatingReport !== null}
+						onclick={downloadPDF}
+					>
+						{#if generatingReport === 'pdf'}
+							<span class="btn-spinner"></span>
+						{:else}
+							<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+								<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+								<polyline points="14 2 14 8 20 8"/>
+								<path d="M9 13h1a2 2 0 000-4H9v8"/>
+							</svg>
+						{/if}
+						<span class="format-label">PDF</span>
+						<span class="format-sub">Print / Save as PDF</span>
+					</button>
 				</div>
 			</div>
 		</div>
@@ -1331,34 +1306,50 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		gap: 8px;
-		padding: 10px 18px;
-		font-size: 14px;
+		gap: 6px;
+		height: 38px;
+		padding: 0 16px;
+		background: rgba(128, 0, 0, 0.08);
+		border: 1px solid rgba(128, 0, 0, 0.2);
+		border-radius: 8px;
+		color: #800000;
 		font-weight: 600;
-		color: #fff;
-		background: var(--bg-sidebar);
-		border: none;
-		border-radius: 10px;
+		font-size: 13px;
 		cursor: pointer;
-		font-family: inherit;
-		transition:
-			opacity 0.2s,
-			transform 0.1s;
-		white-space: nowrap;
+		transition: all 0.2s;
 		box-shadow: var(--shadow-sm);
 	}
 
 	.send-all-btn:hover:not(:disabled) {
-		opacity: 0.9;
+		background: rgba(128, 0, 0, 0.15);
+		border-color: rgba(128, 0, 0, 0.3);
+		transform: translateY(-1px);
+	}
+
+	.send-all-btn.qr-theme {
+		background: rgba(33, 125, 5, 0.08);
+		border-color: rgba(33, 125, 5, 0.2);
+		color: #217d05;
+	}
+
+	.send-all-btn.qr-theme:hover:not(:disabled) {
+		background: rgba(33, 125, 5, 0.15);
+		border-color: rgba(33, 125, 5, 0.3);
+	}
+
+	.send-all-btn.clear-all-btn {
+		background: rgba(220, 38, 38, 0.08);
+		border-color: rgba(220, 38, 38, 0.2);
+		color: #dc2626;
+	}
+
+	.send-all-btn.clear-all-btn:hover:not(:disabled) {
+		background: rgba(220, 38, 38, 0.15);
+		border-color: rgba(220, 38, 38, 0.3);
 	}
 
 	.send-all-btn:active:not(:disabled) {
 		transform: scale(0.98);
-	}
-
-	.send-all-btn:disabled {
-		opacity: 0.7;
-		cursor: not-allowed;
 	}
 
 	.filter-select {
@@ -1713,15 +1704,15 @@
 	.guest-table th {
 		position: sticky;
 		top: 0;
-		background: #fafafa;
-		color: var(--text-secondary);
+		background: #800000;
+		color: #fff;
 		font-size: 11px;
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 		padding: 12px 10px;
 		text-align: left;
-		border-bottom: 1px solid var(--border-color);
+		border-bottom: 1px solid rgba(0, 0, 0, 0.15);
 		z-index: 1;
 	}
 
@@ -1745,19 +1736,19 @@
 	}
 
 	.guest-table tbody tr.row-registered td {
-		background-color: rgba(34, 197, 94, 0.05); /* Very light green */
+		background-color: rgba(128, 0, 0, 0.04); /* Very light red */
 	}
 
 	.guest-table tbody tr.row-registered:hover td {
-		background-color: rgba(34, 197, 94, 0.08);
+		background-color: rgba(128, 0, 0, 0.08);
 	}
 
 	.guest-table tbody tr.row-attended td {
-		background-color: rgba(34, 197, 94, 0.12); /* Slightly darker green */
+		background-color: rgba(128, 0, 0, 0.1); /* Slightly deeper light red */
 	}
 
 	.guest-table tbody tr.row-attended:hover td {
-		background-color: rgba(34, 197, 94, 0.18);
+		background-color: rgba(128, 0, 0, 0.15);
 	}
 
 	.col-num {
@@ -1794,6 +1785,11 @@
 		text-align: center;
 	}
 
+	.col-category {
+		text-align: center;
+		width: 110px;
+	}
+
 	.col-actions {
 		text-align: center;
 		width: 140px;
@@ -1807,6 +1803,7 @@
 	.guest-table th.col-time,
 	.guest-table th.col-status,
 	.guest-table th.col-payment,
+	.guest-table th.col-category,
 	.guest-table th.col-signout,
 	.guest-table th.col-actions {
 		text-align: center;
@@ -1853,6 +1850,91 @@
 		color: #dc2626;
 	}
 
+	.category-badge {
+		display: inline-block;
+		padding: 5px 10px;
+		border-radius: 8px;
+		font-size: 11px;
+		font-weight: 700;
+		letter-spacing: 0.3px;
+		white-space: nowrap;
+	}
+
+	.category-badge.member {
+		background: rgba(59, 130, 246, 0.1);
+		color: #1d4ed8;
+	}
+
+	.category-badge.non-member {
+		background: rgba(249, 115, 22, 0.12);
+		color: #c2410c;
+	}
+
+	.category-badge.student {
+		background: rgba(139, 92, 246, 0.1);
+		color: #6d28d9;
+	}
+
+	.category-badge.unknown {
+		background: #f3f4f6;
+		color: #9ca3af;
+	}
+
+	/* === Status Select Dropdown === */
+	.status-select {
+		appearance: none;
+		-webkit-appearance: none;
+		border: 1px solid var(--border-color);
+		border-radius: 8px;
+		padding: 5px 24px 5px 10px;
+		font-size: 12px;
+		font-weight: 600;
+		font-family: inherit;
+		cursor: pointer;
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%234b5563' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+		background-repeat: no-repeat;
+		background-position: right 6px center;
+		background-color: transparent;
+		transition: border-color 0.2s, background-color 0.2s;
+		min-width: 90px;
+	}
+
+	.status-select:focus {
+		outline: 2px solid rgba(128, 0, 0, 0.3);
+		outline-offset: 1px;
+	}
+
+	.status-select:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.status-select.status-none {
+		color: #6b7280;
+		border-color: #d1d5db;
+		background-color: #f9fafb;
+	}
+
+	.status-select.status-in {
+		color: #1d4ed8;
+		border-color: rgba(29, 78, 216, 0.35);
+		background-color: rgba(59, 130, 246, 0.07);
+	}
+
+	.status-select.status-out {
+		color: #15803d;
+		border-color: rgba(21, 128, 61, 0.35);
+		background-color: rgba(34, 197, 94, 0.08);
+	}
+
+	.status-saving {
+		display: block;
+		font-size: 10px;
+		color: var(--text-muted);
+		margin-top: 3px;
+		animation: pulse 1s ease-in-out infinite;
+	}
+
 	.send-program-btn {
 		display: inline-flex;
 		align-items: center;
@@ -1861,20 +1943,22 @@
 		padding: 8px 12px;
 		font-size: 12px;
 		font-weight: 600;
-		color: #fff;
-		background: var(--bg-sidebar);
-		border: none;
+		color: #800000;
+		background: rgba(128, 0, 0, 0.1);
+		border: 1px solid rgba(128, 0, 0, 0.25);
 		border-radius: 8px;
 		cursor: pointer;
 		font-family: inherit;
 		transition:
-			opacity 0.2s,
+			background 0.2s,
+			border-color 0.2s,
 			transform 0.1s;
 		white-space: nowrap;
 	}
 
 	.send-program-btn:hover:not(:disabled) {
-		opacity: 0.9;
+		background: rgba(128, 0, 0, 0.18);
+		border-color: rgba(128, 0, 0, 0.4);
 	}
 
 	.send-program-btn:active:not(:disabled) {
@@ -1882,7 +1966,7 @@
 	}
 
 	.send-program-btn:disabled {
-		opacity: 0.6;
+		opacity: 0.5;
 		cursor: not-allowed;
 	}
 
@@ -2883,5 +2967,166 @@
 			opacity: 0.7;
 			transform: scale(1);
 		}
+	}
+
+	/* ── Report Download Styles ── */
+	.download-report-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		height: 38px;
+		padding: 0 16px;
+		background: #ffffff;
+		border: 1px solid var(--border-color);
+		border-radius: 8px;
+		color: #374151;
+		font-weight: 600;
+		font-size: 13px;
+		cursor: pointer;
+		transition: all 0.2s;
+		box-shadow: var(--shadow-sm);
+	}
+
+	.download-report-btn:hover {
+		background: #f9fafb;
+		border-color: #d1d5db;
+		color: #111827;
+	}
+
+	.report-modal-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		backdrop-filter: blur(4px);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 1000;
+		padding: 20px;
+	}
+
+	.report-modal {
+		background: #ffffff;
+		border-radius: 16px;
+		width: 100%;
+		max-width: 480px;
+		box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+		display: flex;
+		flex-direction: column;
+		animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+	}
+
+	.report-modal-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 16px 20px;
+		border-bottom: 1px solid var(--border-color);
+	}
+
+	.report-modal-title {
+		font-size: 16px;
+		font-weight: 700;
+		color: var(--text-primary);
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.report-modal-close {
+		width: 32px;
+		height: 32px;
+		border-radius: 8px;
+		border: none;
+		background: transparent;
+		color: var(--text-muted);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		cursor: pointer;
+		transition: all 0.2s;
+	}
+
+	.report-modal-close:hover {
+		background: #f3f4f6;
+		color: var(--text-primary);
+	}
+
+	.report-modal-body {
+		padding: 24px;
+	}
+
+	.report-modal-desc {
+		font-size: 14px;
+		color: var(--text-secondary);
+		line-height: 1.5;
+		margin: 0 0 24px 0;
+	}
+
+	.report-modal-desc strong {
+		color: var(--text-primary);
+	}
+
+	.report-format-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 16px;
+	}
+
+	.report-format-btn {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: 24px 16px;
+		border-radius: 12px;
+		border: 2px solid var(--border-color);
+		background: #ffffff;
+		cursor: pointer;
+		transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+		gap: 12px;
+	}
+
+	.report-format-btn:hover:not(:disabled) {
+		transform: translateY(-2px);
+		box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+	}
+
+	.report-format-btn:active:not(:disabled) {
+		transform: translateY(0);
+	}
+
+	.report-format-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.report-format-btn.xlsx {
+		color: #15803d;
+	}
+	.report-format-btn.xlsx:hover:not(:disabled) {
+		border-color: #15803d;
+		background: #f0fdf4;
+	}
+
+	.report-format-btn.pdf {
+		color: #b91c1c;
+	}
+	.report-format-btn.pdf:hover:not(:disabled) {
+		border-color: #b91c1c;
+		background: #fef2f2;
+	}
+
+	.format-label {
+		font-size: 15px;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+
+	.format-sub {
+		font-size: 12px;
+		color: var(--text-muted);
+		font-weight: 500;
 	}
 </style>

@@ -31,13 +31,6 @@
 	let isFullscreen = $state(false);
 	let facingMode = $state<'environment' | 'user'>('environment');
 
-	// Multi-event / multi-database support
-	const EVENTS = [
-		{ id: '1', label: 'Members' },
-		{ id: '2', label: 'Non-Members' },
-		{ id: '3', label: 'Students' }
-	];
-	let selectedEvent = $state('1');
 
 	// Payment Receipt Modal
 	let showPaymentModal = $state(false);
@@ -84,6 +77,41 @@
 		paymentModalName = '';
 	}
 
+	// ── Scan Log Persistence ────────────────────────────────────────────
+	const SCAN_LOG_KEY = 'qr_scanner_scan_log';
+
+	function saveScanLog() {
+		if (!browser) return;
+		try {
+			localStorage.setItem(SCAN_LOG_KEY, JSON.stringify(scanLog));
+		} catch {
+			// Ignore storage errors (e.g. private mode quota)
+		}
+	}
+
+	function loadScanLogFromStorage(): ScanEntry[] | null {
+		if (!browser) return null;
+		try {
+			const raw = localStorage.getItem(SCAN_LOG_KEY);
+			if (!raw) return null;
+			return JSON.parse(raw) as ScanEntry[];
+		} catch {
+			return null;
+		}
+	}
+
+	function resetLogs() {
+		scanLog = [];
+		if (browser) localStorage.removeItem(SCAN_LOG_KEY);
+	}
+
+	// Auto-save whenever scanLog changes
+	$effect(() => {
+		// Access scanLog to track it reactively
+		void scanLog.length;
+		saveScanLog();
+	});
+
 	const RESUME_DELAY_MS = 2000;
 
 	async function switchCamera() {
@@ -122,9 +150,9 @@
 	async function loadHistoricalScans() {
 		loadingHistory = true;
 		try {
-			const res = await fetch(`/api/attendees?eventId=${selectedEvent}`);
+			const res = await fetch('/api/attendees');
 			const data = await res.json();
-			const attendees: any[] = data.attendees ?? data.registered ?? [];
+			const attendees: any[] = data.registered ?? data.attendees ?? [];
 			const attended = attendees
 				.filter((g) => g.attended && g.scanTime)
 				.sort((a, b) => new Date(b.scanTime).getTime() - new Date(a.scanTime).getTime());
@@ -132,6 +160,7 @@
 			scanLog = attended.map((g) => ({
 				name: g.name || 'Unknown',
 				email: g.email || '',
+				category: g.category || '',
 				status: 'success' as const,
 				message: '',
 				time: new Date(g.scanTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
@@ -144,11 +173,6 @@
 		} finally {
 			loadingHistory = false;
 		}
-	}
-
-	function onEventChange() {
-		scanLog = [];
-		loadHistoricalScans();
 	}
 
 	async function startCamera() {
@@ -205,7 +229,7 @@
 			const res = await fetch('/api/mark-attendance', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ qrContent: decodedText, eventId: selectedEvent })
+				body: JSON.stringify({ qrContent: decodedText })
 			});
 			const data = await res.json();
 
@@ -219,6 +243,7 @@
 				scanLog = [
 					{
 						name: data.name || 'Unknown',
+						category: data.category || '',
 						status: 'success',
 						message: '',
 						time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
@@ -242,6 +267,7 @@
 					scanLog = [
 						{
 							name: data.name || resultTitle,
+							category: data.category || '',
 							status: 'error',
 							message: resultMessage,
 							time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
@@ -256,17 +282,18 @@
 					// Extract name from message like "Already fully checked in: John Doe"
 					const nameFromMsg = data.name || data.message?.split(': ').slice(1).join(': ') || '';
 					scannerStatus = 'duplicate';
-					statusText = 'Already Checked In!';
-					resultTitle = 'Already Checked In';
+					statusText = 'Already Completed Log';
+					resultTitle = 'Already Completed Log';
 					resultMessage = nameFromMsg
-						? `${nameFromMsg} has already fully checked in`
-						: 'This guest has already been scanned';
+						? `${nameFromMsg} has already completed the log for today`
+						: 'This guest has already completed the log for today';
 
 					scanLog = [
 						{
-							name: nameFromMsg || 'Already Checked In',
+							name: nameFromMsg || 'Already Completed Log',
+							category: data.category || '',
 							status: 'duplicate',
-							message: 'Already checked in',
+							message: 'Already completed log for today',
 							time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
 							proofOfPayment: data.proofOfPayment || 'NOT PAID'
 						},
@@ -320,7 +347,14 @@
 	}
 
 	onMount(() => {
-		loadHistoricalScans();
+		// Restore persisted log first; fall back to API historical load if nothing stored
+		const stored = loadScanLogFromStorage();
+		if (stored && stored.length > 0) {
+			scanLog = stored;
+			loadingHistory = false;
+		} else {
+			loadHistoricalScans();
+		}
 		setTimeout(() => startCamera(), 200);
 		document.addEventListener('fullscreenchange', onFullscreenChange);
 		document.addEventListener('webkitfullscreenchange', onFullscreenChange);
@@ -344,22 +378,6 @@
 
 <Navbar title="QR Scanner" />
 
-<!-- Event Selector Bar -->
-<div class="event-selector-bar">
-	<span class="event-selector-label">Database:</span>
-	<div class="event-tabs">
-		{#each EVENTS as event}
-			<button
-				class="event-tab"
-				class:active={selectedEvent === event.id}
-				onclick={() => { selectedEvent = event.id; onEventChange(); }}
-				id="event-tab-{event.id}"
-			>
-				{event.label}
-			</button>
-		{/each}
-	</div>
-</div>
 
 <main class="content">
 	<div class="page-container">
@@ -466,7 +484,21 @@
 			<div class="log-panel">
 				<div class="log-header">
 					<h2 class="log-title">Scan Log</h2>
-					<span class="log-count">{scanLog.length} scans</span>
+					<div class="log-header-right">
+						<span class="log-count">{scanLog.length} scans</span>
+						{#if scanLog.length > 0}
+							<button class="reset-log-btn" onclick={resetLogs} aria-label="Reset scan logs">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+									<polyline points="3 6 5 6 21 6" />
+									<path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
+									<path d="M10 11v6" />
+									<path d="M14 11v6" />
+									<path d="M9 6V4h6v2" />
+								</svg>
+								Reset
+							</button>
+						{/if}
+					</div>
 				</div>
 				<div class="log-list">
 					{#if loadingHistory}
@@ -570,6 +602,17 @@
 											<span class="log-payment not-paid">Not Paid</span>
 										{/if}
 									{/if}
+									{#if entry.category}
+										{#if entry.category === 'Member'}
+											<span class="category-badge member">Member</span>
+										{:else if entry.category === 'Non-Member'}
+											<span class="category-badge non-member">Non-Member</span>
+										{:else if entry.category === 'Student'}
+											<span class="category-badge student">Student</span>
+										{:else}
+											<span class="category-badge unknown">{entry.category || '—'}</span>
+										{/if}
+									{/if}
 								</div>
 								<div class="log-time" class:duplicate-time={entry.status === 'duplicate'}>
 									{#if entry.status === 'duplicate'}
@@ -648,58 +691,6 @@
 		background: var(--bg-primary);
 	}
 
-	/* === Event Selector Bar === */
-	.event-selector-bar {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 10px 20px;
-		background: var(--bg-secondary, #1a1a2e);
-		border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
-		flex-shrink: 0;
-	}
-
-	.event-selector-label {
-		font-size: 12px;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-secondary, rgba(255,255,255,0.45));
-		white-space: nowrap;
-	}
-
-	.event-tabs {
-		display: flex;
-		gap: 6px;
-		flex-wrap: wrap;
-	}
-
-	.event-tab {
-		padding: 6px 16px;
-		border-radius: 20px;
-		border: 1px solid var(--border-color, rgba(255,255,255,0.12));
-		background: transparent;
-		color: var(--text-secondary, rgba(255,255,255,0.55));
-		font-size: 13px;
-		font-weight: 500;
-		cursor: pointer;
-		transition: all 0.18s ease;
-		white-space: nowrap;
-	}
-
-	.event-tab:hover {
-		background: rgba(255,255,255,0.06);
-		color: var(--text-primary, #fff);
-		border-color: rgba(255,255,255,0.25);
-	}
-
-	.event-tab.active {
-		background: var(--accent-color, #800000);
-		border-color: var(--accent-color, #800000);
-		color: #fff;
-		font-weight: 600;
-		box-shadow: 0 2px 8px rgba(128,0,0,0.35);
-	}
 
 	.scanner-grid {
 		flex: 1;
@@ -720,6 +711,7 @@
 		margin: 0 auto;
 		width: 100%;
 		padding: 16px;
+		min-height: 0; /* Allows flex child scanner-grid to respect height constraints */
 	}
 
 	@media (min-width: 768px) and (min-aspect-ratio: 1/1) {
@@ -1318,6 +1310,40 @@
 		flex-shrink: 0;
 	}
 
+	.log-header-right {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.reset-log-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		padding: 5px 10px;
+		font-size: 11px;
+		font-weight: 600;
+		font-family: inherit;
+		color: #800000;
+		background: rgba(128, 0, 0, 0.08);
+		border: 1px solid rgba(128, 0, 0, 0.2);
+		border-radius: 8px;
+		cursor: pointer;
+		transition:
+			background 0.2s,
+			border-color 0.2s;
+		white-space: nowrap;
+	}
+
+	.reset-log-btn:hover {
+		background: rgba(128, 0, 0, 0.15);
+		border-color: rgba(128, 0, 0, 0.35);
+	}
+
+	.reset-log-btn:active {
+		transform: scale(0.97);
+	}
+
 	.log-title {
 		font-size: 15px;
 		font-weight: 600;
@@ -1337,6 +1363,35 @@
 		flex: 1;
 		overflow-y: auto;
 		padding: 8px 0;
+		max-height: 320px; /* Mobile: cap the list height so it scrolls instead of stretching */
+		min-height: 0;
+		-webkit-overflow-scrolling: touch; /* Smooth momentum scrolling on iOS */
+		scrollbar-gutter: stable; /* Always reserve scrollbar space so layout doesn't shift */
+	}
+
+	/* Custom scrollbar styling — always reserve space beside the time column */
+	.log-list::-webkit-scrollbar {
+		width: 6px;
+	}
+
+	.log-list::-webkit-scrollbar-track {
+		background: transparent;
+	}
+
+	.log-list::-webkit-scrollbar-thumb {
+		background: var(--border-color, rgba(128, 0, 0, 0.25));
+		border-radius: 100px;
+	}
+
+	.log-list::-webkit-scrollbar-thumb:hover {
+		background: var(--accent-color, rgba(128, 0, 0, 0.5));
+	}
+
+	@media (min-width: 768px) and (min-aspect-ratio: 1/1) {
+		.log-list {
+			/* On desktop, cap to viewport height minus navbar + header + padding so the camera never stretches */
+			max-height: calc(100vh - 220px);
+		}
 	}
 
 	.log-loading {
@@ -1454,10 +1509,12 @@
 
 	.log-payment-col {
 		display: flex;
+		flex-direction: column;
+		gap: 4px;
 		align-items: center;
 		justify-content: center;
 		flex-shrink: 0;
-		width: clamp(72px, 13%, 96px);
+		width: clamp(72px, 15%, 100px);
 	}
 
 	.log-name {
@@ -1504,6 +1561,37 @@
 	.log-payment.not-paid {
 		background: rgba(239, 68, 68, 0.08);
 		color: #dc2626;
+	}
+
+	.category-badge {
+		display: inline-block;
+		padding: 2px 6px;
+		border-radius: 6px;
+		font-size: 9px;
+		font-weight: 700;
+		letter-spacing: 0.3px;
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+
+	.category-badge.member {
+		background: rgba(59, 130, 246, 0.1);
+		color: #1d4ed8;
+	}
+
+	.category-badge.non-member {
+		background: rgba(249, 115, 22, 0.12);
+		color: #c2410c;
+	}
+
+	.category-badge.student {
+		background: rgba(139, 92, 246, 0.1);
+		color: #6d28d9;
+	}
+
+	.category-badge.unknown {
+		background: #f3f4f6;
+		color: #9ca3af;
 	}
 
 	/* ── Payment Receipt Modal ── */

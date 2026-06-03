@@ -2,15 +2,10 @@ import { json } from '@sveltejs/kit';
 import { getScriptUrl } from '$lib/server/getScriptUrl';
 import type { RequestHandler } from './$types';
 
-const CATEGORY_LABELS: Record<string, string> = {
-	'1': 'Member',
-	'2': 'Non-Member',
-	'3': 'Student'
-};
-
-async function tryMarkAttendance(
+async function tryUpdateStatus(
 	eventId: string,
-	qrContent: string
+	certId: string,
+	newStatus: string
 ): Promise<{ success: boolean; data: any; isNotFound: boolean }> {
 	const { url, configured } = getScriptUrl(eventId);
 	if (!configured) return { success: false, data: null, isNotFound: true };
@@ -19,8 +14,8 @@ async function tryMarkAttendance(
 		const response = await fetch(url, {
 			method: 'POST',
 			redirect: 'follow',
-			headers: { 'Content-Type': 'text/plain' },
-			body: JSON.stringify({ qrContent })
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ action: 'updateStatus', certId, newStatus })
 		});
 
 		const text = await response.text();
@@ -29,14 +24,10 @@ async function tryMarkAttendance(
 		}
 
 		const data = JSON.parse(text);
-		data.category = CATEGORY_LABELS[eventId] ?? 'Member';
-		const msg = (data.message || '').toLowerCase();
 		const isNotFound =
 			!data.success &&
-			(msg.includes('not found') ||
-				msg.includes('not registered') ||
-				msg.includes('not pre-registered') ||
-				msg.includes('not recognized'));
+			(String(data.message || '').toLowerCase().includes('not found') ||
+				String(data.message || '').toLowerCase().includes('not found for'));
 
 		return { success: data.success, data, isNotFound };
 	} catch {
@@ -46,26 +37,36 @@ async function tryMarkAttendance(
 
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.json();
-	const qrContent = body.qrContent || body.certId;
+	const certId = (body.certId || '').toString().trim();
+	const newStatus = (body.newStatus || '').toString().trim().toUpperCase();
 
-	// Try all three databases in parallel
+	if (!certId) {
+		return json({ success: false, message: 'certId is required' }, { status: 400 });
+	}
+	if (!['NONE', 'IN', 'OUT'].includes(newStatus)) {
+		return json(
+			{ success: false, message: 'newStatus must be NONE, IN, or OUT' },
+			{ status: 400 }
+		);
+	}
+
+	// Try all three databases in parallel — only one will have the certId
 	const [members, nonMembers, students] = await Promise.all([
-		tryMarkAttendance('1', qrContent),
-		tryMarkAttendance('2', qrContent),
-		tryMarkAttendance('3', qrContent)
+		tryUpdateStatus('1', certId, newStatus),
+		tryUpdateStatus('2', certId, newStatus),
+		tryUpdateStatus('3', certId, newStatus)
 	]);
 
 	const results = [members, nonMembers, students];
 
-	// 1. Return first success
+	// Return first success
 	const success = results.find((r) => r.success);
 	if (success) return json(success.data);
 
-	// 2. Return first meaningful failure (e.g. "already checked in") — not a "not found"
+	// Return first meaningful error (not a "not found")
 	const meaningful = results.find((r) => r.data && !r.isNotFound);
 	if (meaningful) return json(meaningful.data);
 
-	// 3. All returned not found
-	return json({ success: false, message: 'Not pre-registered in any database' });
+	// All returned not found
+	return json({ success: false, message: 'Attendee not found in any database' });
 };
-
