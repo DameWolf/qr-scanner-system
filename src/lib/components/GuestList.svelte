@@ -220,7 +220,6 @@
 
 		let formatted = family;
 		if (given) formatted += ', ' + given;
-		if (g.postNominal && g.postNominal.trim()) formatted += ', ' + g.postNominal.trim();
 		return formatted.toUpperCase();
 	}
 
@@ -604,8 +603,8 @@
 							statusOut: r.statusOut || (match ? match.statusOut || '' : ''),
 							scanTimeOut: match ? match.scanTimeOut || null : null,
 							isHighlighted: !!r.isHighlighted,
-							prcId: r.prcId || '',
-							prcValidUntil: r.prcValidUntil || null,
+							prcId: r.prcId || r['PRC ID Number'] || r['prcId'] || r['PRC ID'] || '',
+							prcValidUntil: r.prcValidUntil || r['PRC ID Valid Until'] || r['prcValidUntil'] || r['Valid Until'] || null,
 							postNominal: r.postNominal || ''
 						};
 					});
@@ -622,8 +621,8 @@
 						statusOut: a.statusOut || '',
 						scanTimeOut: a.scanTimeOut || null,
 						isHighlighted: !!a.isHighlighted,
-						prcId: a.prcId || '',
-						prcValidUntil: a.prcValidUntil || null,
+						prcId: a.prcId || a['PRC ID Number'] || a['prcId'] || a['PRC ID'] || '',
+						prcValidUntil: a.prcValidUntil || a['PRC ID Valid Until'] || a['prcValidUntil'] || a['Valid Until'] || null,
 						postNominal: a.postNominal || ''
 					}));
 				}

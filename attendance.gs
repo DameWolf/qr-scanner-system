@@ -484,8 +484,8 @@ function doGet(e) {
     var emailSentAtCol = findColumn(cols, ["EMAIL_SENT_AT", "Email Sent At"]);
     var emailStatusCol = findColumn(cols, ["EMAIL_STATUS", "Email Status"]);
     var proofOfPaymentCol = findColumn(cols, ["Proof of Payment", "Upload", "Receipt", "Payment Proof", "Attachment", "proof of payment"]);
-    var prcIdCol = findColumn(cols, ["PRC ID Number", "PRC ID No", "PRC ID", "PRC Number", "PRC No", "License Number", "License No", "PRC License", "PRC License Number"]);
-    var prcValidUntilCol = findColumn(cols, ["PRC ID Valid Until", "PRC Valid Until", "Valid Until", "PRC Expiry", "Expiry Date", "Expiration Date", "PRC ID Expiry", "License Expiry"]);
+    var prcIdCol = findColumn(cols, ["PRC ID Number", "PRC ID Number:", "PRC ID No.", "PRC ID No", "PRC ID", "PRC ID:", "PRC Number", "PRC No", "License Number", "License No", "PRC License", "PRC License Number", "PRC Registration Number", "PRC Reg Number", "PRC Reg No"]);
+    var prcValidUntilCol = findColumn(cols, ["PRC ID Valid Until", "PRC ID Valid Until:", "PRC Valid Until", "Valid Until", "Valid Until:", "PRC Expiry", "Expiry Date", "Expiration Date", "PRC ID Expiry", "License Expiry", "PRC Validity", "PRC Validity Date", "PRC Expiration Date"]);
     var postNominalCol = findColumn(cols, ["Post-Nominal", "Post Nominal", "Post-Nominal Title", "Post Nominal Title", "Suffix", "Professional Title", "Credentials", "Honorifics", "Post-Nominals", "Titles"]);
 
     var values = sheet.getDataRange().getValues();
