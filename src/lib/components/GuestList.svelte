@@ -607,6 +607,25 @@
 		searchFocused = false;
 	}
 
+	function extractProp(obj: any, keys: string[]): string {
+		if (!obj) return '';
+		for (const key of keys) {
+			if (obj[key] !== undefined && obj[key] !== null && obj[key] !== '') {
+				return String(obj[key]).trim();
+			}
+		}
+		// Case-insensitive fallback
+		for (const k in obj) {
+			const lowerK = k.toLowerCase().replace(/[:\s_]/g, '');
+			for (const targetKey of keys) {
+				if (lowerK === targetKey.toLowerCase().replace(/[:\s_]/g, '') && obj[k]) {
+					return String(obj[k]).trim();
+				}
+			}
+		}
+		return '';
+	}
+
 	export async function loadGuests() {
 		if (!loading) refreshing = true;
 		try {
@@ -626,6 +645,10 @@
 					guests = data.registered.map((r: any) => {
 						const key = (r.email || r.name || '').toLowerCase();
 						const match = attendedMap.get(key);
+						const prcIdVal = extractProp(r, ['prcId', 'PRC ID Number', 'PRC ID No', 'PRC ID', 'PRC Number']) || extractProp(match, ['prcId', 'PRC ID Number', 'PRC ID No', 'PRC ID', 'PRC Number']);
+						const prcValidVal = extractProp(r, ['prcValidUntil', 'PRC ID Valid Until', 'PRC Valid Until', 'Valid Until', 'PRC Expiry']) || extractProp(match, ['prcValidUntil', 'PRC ID Valid Until', 'PRC Valid Until', 'Valid Until', 'PRC Expiry']);
+						const postNomVal = extractProp(r, ['postNominal', 'Post-Nominal', 'Post Nominal']) || extractProp(match, ['postNominal', 'Post-Nominal', 'Post Nominal']);
+
 						return {
 							name: r.name || '',
 							email: r.email || '',
@@ -639,28 +662,34 @@
 							statusOut: r.statusOut || (match ? match.statusOut || '' : ''),
 							scanTimeOut: match ? match.scanTimeOut || null : null,
 							isHighlighted: !!r.isHighlighted,
-							prcId: r.prcId || r['PRC ID Number'] || r['prcId'] || r['PRC ID'] || '',
-							prcValidUntil: r.prcValidUntil || r['PRC ID Valid Until'] || r['prcValidUntil'] || r['Valid Until'] || null,
-							postNominal: r.postNominal || ''
+							prcId: prcIdVal,
+							prcValidUntil: prcValidVal || null,
+							postNominal: postNomVal
 						};
 					});
 				} else if (data.attendees) {
-					guests = data.attendees.map((a: any) => ({
-						name: a.name || '',
-						email: a.email || '',
-						type: (a.type || a.participantType || a.category || '').trim(),
-						category: a.category || '',
-						certId: a.certId || '',
-						scanTime: a.scanTime || null,
-						attended: true,
-						proofOfPayment: a.proofOfPayment || 'NOT PAID',
-						statusOut: a.statusOut || '',
-						scanTimeOut: a.scanTimeOut || null,
-						isHighlighted: !!a.isHighlighted,
-						prcId: a.prcId || a['PRC ID Number'] || a['prcId'] || a['PRC ID'] || '',
-						prcValidUntil: a.prcValidUntil || a['PRC ID Valid Until'] || a['prcValidUntil'] || a['Valid Until'] || null,
-						postNominal: a.postNominal || ''
-					}));
+					guests = data.attendees.map((a: any) => {
+						const prcIdVal = extractProp(a, ['prcId', 'PRC ID Number', 'PRC ID No', 'PRC ID', 'PRC Number']);
+						const prcValidVal = extractProp(a, ['prcValidUntil', 'PRC ID Valid Until', 'PRC Valid Until', 'Valid Until', 'PRC Expiry']);
+						const postNomVal = extractProp(a, ['postNominal', 'Post-Nominal', 'Post Nominal']);
+
+						return {
+							name: a.name || '',
+							email: a.email || '',
+							type: (a.type || a.participantType || a.category || '').trim(),
+							category: a.category || '',
+							certId: a.certId || '',
+							scanTime: a.scanTime || null,
+							attended: true,
+							proofOfPayment: a.proofOfPayment || 'NOT PAID',
+							statusOut: a.statusOut || '',
+							scanTimeOut: a.scanTimeOut || null,
+							isHighlighted: !!a.isHighlighted,
+							prcId: prcIdVal,
+							prcValidUntil: prcValidVal || null,
+							postNominal: postNomVal
+						};
+					});
 				}
 			}
 		} catch (err) {

@@ -1,8 +1,4 @@
-import {
-	APPS_SCRIPT_URL,
-	APPS_SCRIPT_URL_2,
-	APPS_SCRIPT_URL_3
-} from '$env/static/private';
+import { env } from '$env/dynamic/private';
 
 const EVENT_LABELS: Record<string, string> = {
 	'1': 'Members',
@@ -22,13 +18,17 @@ export function getScriptUrl(eventId: string | number | null | undefined): {
 	const id = String(eventId ?? '1').trim();
 	const label = EVENT_LABELS[id] ?? 'Members';
 
+	const url1 = env.APPS_SCRIPT_URL || process.env.APPS_SCRIPT_URL || '';
+	const url2 = env.APPS_SCRIPT_URL_2 || process.env.APPS_SCRIPT_URL_2 || '';
+	const url3 = env.APPS_SCRIPT_URL_3 || process.env.APPS_SCRIPT_URL_3 || '';
+
 	let url: string;
 	if (id === '2') {
-		url = APPS_SCRIPT_URL_2 ?? '';
+		url = url2 || url1;
 	} else if (id === '3') {
-		url = APPS_SCRIPT_URL_3 ?? '';
+		url = url3 || url1;
 	} else {
-		url = APPS_SCRIPT_URL ?? '';
+		url = url1;
 	}
 
 	const configured = !!url && !url.startsWith('PASTE_');
