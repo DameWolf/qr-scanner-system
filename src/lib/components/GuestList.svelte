@@ -197,30 +197,62 @@
 	// ── Report Download ──────────────────────────────────────────────
 
 	/**
-	 * Extracts the family (last) name from a full name string for sorting.
-	 * Handles compound surnames separated by spaces (e.g., "Dela Cruz").
-	 * Assumes format: GIVEN [MIDDLE] FAMILY.
+	 * Parses and cleans full names by stripping titles/prefixes (DTA, BLS, Dr., etc.)
+	 * and post-nominals/credentials (RMT, MSMLS, MLS(ASCPi), MD, PhD, etc.).
+	 * Returns object with family (last name) and given names.
 	 */
-	function extractFamilyName(fullName: string): string {
-		const parts = fullName.trim().split(/\s+/);
-		if (parts.length === 0) return '';
-		// Last word is the family name
-		return (parts[parts.length - 1] ?? '').toLowerCase();
+	function parseCleanName(rawName: string): { family: string; given: string } {
+		if (!rawName) return { family: '', given: '' };
+
+		// 1. Strip common prefixes at the start
+		let cleaned = rawName.replace(/^(dta|bls|dr\.|dr|mr\.|mr|ms\.|ms|prof\.|prof)\s*,?\s*/i, '').trim();
+
+		// 2. Strip common post-nominals/suffixes at the end
+		let prev = '';
+		while (cleaned !== prev) {
+			prev = cleaned;
+			cleaned = cleaned.replace(/,?\s*(rmt|md|phd|msmls|mls\(ascpi\)|ms|bs|rmth|cph|rn|dmd|doc|esq)\.?\s*,?$/i, '').trim();
+		}
+		cleaned = cleaned.replace(/,\s*$/, '').trim();
+
+		// 3. If there's a comma in the middle, it's already "Family, Given"
+		if (cleaned.includes(',')) {
+			const parts = cleaned.split(',').map((s) => s.trim()).filter(Boolean);
+			if (parts.length >= 2) {
+				return { family: parts[0], given: parts.slice(1).join(' ') };
+			}
+		}
+
+		// 4. Fallback: last word is family, rest are given
+		const words = cleaned.split(/\s+/).filter(Boolean);
+		if (words.length === 0) return { family: '', given: '' };
+		if (words.length === 1) return { family: words[0], given: '' };
+
+		const family = words[words.length - 1];
+		const given = words.slice(0, words.length - 1).join(' ');
+		return { family, given };
 	}
 
-	/**
-	 * Formats a guest name for the report:
-	 * "FAMILY NAME, GIVEN [MIDDLE], POST-NOMINAL"
-	 * All uppercase. e.g.: "DELA CRUZ, JUAN MIGUEL, RMT, MD, PHD"
-	 */
 	function formatReportName(g: Guest): string {
-		const parts = g.name.trim().split(/\s+/);
-		const family = parts.length > 1 ? parts[parts.length - 1] : parts[0];
-		const given = parts.length > 1 ? parts.slice(0, parts.length - 1).join(' ') : '';
-
-		let formatted = family;
-		if (given) formatted += ', ' + given;
+		const parsed = parseCleanName(g.name);
+		let formatted = parsed.family;
+		if (parsed.given) formatted += ', ' + parsed.given;
 		return formatted.toUpperCase();
+	}
+
+	function formatDateOnly(iso: string | null): string {
+		if (!iso) return '';
+		try {
+			const d = new Date(iso);
+			if (isNaN(d.getTime())) return iso.toUpperCase();
+			return d.toLocaleDateString('en-US', {
+				year: 'numeric',
+				month: 'short',
+				day: '2-digit'
+			}).toUpperCase();
+		} catch {
+			return iso.toUpperCase();
+		}
 	}
 
 	function formatDatetime(iso: string | null): string {
@@ -249,14 +281,18 @@
 
 	function buildReportRows() {
 		return [...guests]
-			.sort((a, b) => extractFamilyName(a.name).localeCompare(extractFamilyName(b.name), 'en', { sensitivity: 'base' }))
+			.sort((a, b) => {
+				const famA = parseCleanName(a.name).family;
+				const famB = parseCleanName(b.name).family;
+				return famA.localeCompare(famB, 'en', { sensitivity: 'base' });
+			})
 			.map((g, idx) => ({
 				'#': idx + 1,
 				'Full Name': formatReportName(g),
 				'Email': g.email.toUpperCase(),
 				'Category': (g.category || g.type || '').toUpperCase(),
 				'PRC ID Number': g.prcId ? g.prcId.toUpperCase() : '—',
-				'PRC ID Valid Until': g.prcValidUntil ? formatDatetime(g.prcValidUntil) : '—',
+				'PRC ID Valid Until': g.prcValidUntil ? formatDateOnly(g.prcValidUntil) : '—',
 				'Payment': formatPayment(g.proofOfPayment),
 				'Check-In Time': formatDatetime(g.scanTime),
 				'Check-Out Time': formatDatetime(g.scanTimeOut)
