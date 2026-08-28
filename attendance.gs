@@ -1295,19 +1295,49 @@ function generateDocument(name, chapter, email, config, issueDate, certId, docTy
   var eventDate = config.EVENT_DATE || issueDate;
   var eventLocation = config.EVENT_LOCATION || "";
 
-  name = name || "Unknown";
-  email = email || "unknown@email.com";
-  chapter = chapter || " ";
+  name = String(name || "Unknown").trim();
+  email = String(email || "unknown@email.com").trim();
+  chapter = String(chapter || " ").trim();
   docType = docType || "Document";
   
-  givenName = givenName || "";
-  middleName = middleName || "";
-  familyName = familyName || "";
+  givenName = String(givenName || "").trim();
+  middleName = String(middleName || "").trim();
+  familyName = String(familyName || "").trim();
 
-  // Create a multi-line version for the ID as requested: 
-  // Line 1: Family
-  // Line 2: Given Middle
-  var multiLineName = familyName + "\n" + givenName + (middleName ? " " + middleName : "");
+  // If split columns were not provided, extract given, middle, and family from full name
+  if ((!givenName || !familyName) && name && name !== "Unknown") {
+    var nameParts = name.split(/\s+/).filter(Boolean);
+    if (nameParts.length === 1) {
+      givenName = nameParts[0];
+    } else if (nameParts.length === 2) {
+      givenName = nameParts[0];
+      familyName = nameParts[1];
+    } else if (nameParts.length >= 3) {
+      givenName = nameParts[0];
+      middleName = nameParts.slice(1, nameParts.length - 1).join(" ");
+      familyName = nameParts[nameParts.length - 1];
+    }
+  }
+
+  // Force ALL text to UPPERCASE as requested
+  givenName = givenName.toUpperCase();
+  middleName = middleName.toUpperCase();
+  familyName = familyName.toUpperCase();
+  name = name.toUpperCase();
+  chapter = chapter.toUpperCase();
+  var upperEventName = String(eventName || "").toUpperCase();
+  var upperEventDate = String(eventDate || "").toUpperCase();
+  var upperEventLoc = String(eventLocation || "").toUpperCase();
+
+  // Format multiLineName for ID:
+  // Top: Given Name
+  // Middle: Middle Name (if present)
+  // Bottom: Family Name
+  var lines = [];
+  if (givenName) lines.push(givenName);
+  if (middleName) lines.push(middleName);
+  if (familyName) lines.push(familyName);
+  var multiLineName = lines.join("\n");
 
   Logger.log("Generating " + docType + " for: " + name);
 
@@ -1354,8 +1384,8 @@ function generateDocument(name, chapter, email, config, issueDate, certId, docTy
   // 3. Replace placeholders
   if (isSlides) {
     var presentation = SlidesApp.openById(copyId);
-    var nameStr = String(name || "");
-    var chapStr = String(chapter || "");
+    var nameStr = name;
+    var chapStr = chapter;
 
     // Auto-scale long names to fit in the text box
     function replaceAndScaleName(elements, tags, replacement) {
@@ -1405,20 +1435,29 @@ function generateDocument(name, chapter, email, config, issueDate, certId, docTy
       "<<PARTICIPANT FULLNAME>>": nameStr,
       "<<Participant Fullname>>": nameStr,
       "<<participant fullname>>": nameStr,
-      "<<FAMILY_NAME>>": String(familyName || ""),
-      "<<GIVEN_NAME>>": String(givenName || ""),
-      "<<MIDDLE_NAME>>": String(middleName || ""),
+      "<<FAMILY_NAME>>": familyName,
+      "<<Family Name>>": familyName,
+      "<<Family_Name>>": familyName,
+      "<<GIVEN_NAME>>": givenName,
+      "<<Given Name>>": givenName,
+      "<<Given_Name>>": givenName,
+      "<<MIDDLE_NAME>>": middleName,
+      "<<Middle Name>>": middleName,
+      "<<Middle_Name>>": middleName,
       "<<MULTI_LINE_NAME>>": multiLineName,
       "<<CHAPTER>>": chapStr,
       "<<Chapter>>": chapStr,
       "{{NAME}}": nameStr,
+      "{{GIVEN_NAME}}": givenName,
+      "{{MIDDLE_NAME}}": middleName,
+      "{{FAMILY_NAME}}": familyName,
       "{{CHAPTER}}": chapStr,
-      "{{EVENT_NAME}}": String(eventName || ""),
-      "{{EVENT_DATE}}": String(eventDate || ""),
-      "{{EVENT_LOCATION}}": String(eventLocation || ""),
-      "{{ISSUE_DATE}}": String(issueDate || ""),
-      "{{CERT_ID}}": String(certId || ""),
-      "{{EMAIL}}": String(email || "")
+      "{{EVENT_NAME}}": upperEventName,
+      "{{EVENT_DATE}}": upperEventDate,
+      "{{EVENT_LOCATION}}": upperEventLoc,
+      "{{ISSUE_DATE}}": String(issueDate || "").toUpperCase(),
+      "{{CERT_ID}}": String(certId || "").toUpperCase(),
+      "{{EMAIL}}": String(email || "").toUpperCase()
     };
 
     for (var tag in replacements) {
@@ -1492,16 +1531,23 @@ function generateDocument(name, chapter, email, config, issueDate, certId, docTy
 
     body.replaceText("<<Participant Fullname>>", name);
     body.replaceText("<<participant fullname>>", name);
+    body.replaceText("<<PARTICIPANT FULLNAME>>", name);
     body.replaceText("<<Full Name>>", name);
     body.replaceText("<<Fullname>>", name);
+    body.replaceText("<<MULTI_LINE_NAME>>", multiLineName);
+    body.replaceText("<<GIVEN_NAME>>", givenName);
+    body.replaceText("<<MIDDLE_NAME>>", middleName);
+    body.replaceText("<<FAMILY_NAME>>", familyName);
     body.replaceText("<<Chapter>>", chapter);
+    body.replaceText("<<CHAPTER>>", chapter);
 
     // Use a helper for curly brace placeholders to avoid regex issues
     var placeholders = {
       "{{NAME}}": name, "{{name}}": name, "{{Name}}": name, "{{FULL_NAME}}": name,
-      "{{CHAPTER}}": chapter, "{{EVENT_NAME}}": eventName, "{{EVENT_DATE}}": eventDate,
-      "{{EVENT_LOCATION}}": eventLocation, "{{ISSUE_DATE}}": issueDate,
-      "{{CERT_ID}}": certId, "{{EMAIL}}": email
+      "{{GIVEN_NAME}}": givenName, "{{MIDDLE_NAME}}": middleName, "{{FAMILY_NAME}}": familyName,
+      "{{CHAPTER}}": chapter, "{{EVENT_NAME}}": upperEventName, "{{EVENT_DATE}}": upperEventDate,
+      "{{EVENT_LOCATION}}": upperEventLoc, "{{ISSUE_DATE}}": String(issueDate || "").toUpperCase(),
+      "{{CERT_ID}}": String(certId || "").toUpperCase(), "{{EMAIL}}": String(email || "").toUpperCase()
     };
     
     for (var p in placeholders) {
