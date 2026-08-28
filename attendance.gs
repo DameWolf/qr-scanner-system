@@ -484,6 +484,9 @@ function doGet(e) {
     var emailSentAtCol = findColumn(cols, ["EMAIL_SENT_AT", "Email Sent At"]);
     var emailStatusCol = findColumn(cols, ["EMAIL_STATUS", "Email Status"]);
     var proofOfPaymentCol = findColumn(cols, ["Proof of Payment", "Upload", "Receipt", "Payment Proof", "Attachment", "proof of payment"]);
+    var prcIdCol = findColumn(cols, ["PRC ID Number", "PRC ID No", "PRC ID", "PRC Number", "PRC No", "License Number", "License No", "PRC License", "PRC License Number"]);
+    var prcValidUntilCol = findColumn(cols, ["PRC ID Valid Until", "PRC Valid Until", "Valid Until", "PRC Expiry", "Expiry Date", "Expiration Date", "PRC ID Expiry", "License Expiry"]);
+    var postNominalCol = findColumn(cols, ["Post-Nominal", "Post Nominal", "Post-Nominal Title", "Post Nominal Title", "Suffix", "Professional Title", "Credentials", "Honorifics", "Post-Nominals", "Titles"]);
 
     var values = sheet.getDataRange().getValues();
     var backgrounds = sheet.getDataRange().getBackgrounds();
@@ -502,6 +505,9 @@ function doGet(e) {
       var emailSentAt = emailSentAtCol > 0 ? values[i][emailSentAtCol - 1] : "";
       var emailStatus = emailStatusCol > 0 ? String(values[i][emailStatusCol - 1] || "").trim() : "";
       var proofOfPayment = proofOfPaymentCol > 0 ? String(values[i][proofOfPaymentCol - 1] || "").trim() : "";
+      var prcId = prcIdCol > 0 ? String(values[i][prcIdCol - 1] || "").trim() : "";
+      var prcValidUntil = prcValidUntilCol > 0 ? safeToISOString(values[i][prcValidUntilCol - 1]) : "";
+      var postNominal = postNominalCol > 0 ? String(values[i][postNominalCol - 1] || "").trim() : "";
 
       // Highlight Detection (Green background = Validated)
       var isHighlighted = false;
@@ -539,7 +545,10 @@ function doGet(e) {
           emailSentAt: safeToISOString(emailSentAt),
           emailStatus: emailStatus,
           proofOfPayment: proofOfPayment || "NOT PAID",
-          isHighlighted: isHighlighted
+          isHighlighted: isHighlighted,
+          prcId: prcId,
+          prcValidUntil: prcValidUntil,
+          postNominal: postNominal
         });
       }
 
@@ -551,7 +560,10 @@ function doGet(e) {
           scanTime: safeToISOString(scanTime),
           statusOut: statusOut,
           scanTimeOut: safeToISOString(scanTimeOut),
-          proofOfPayment: proofOfPayment || "NOT PAID"
+          proofOfPayment: proofOfPayment || "NOT PAID",
+          prcId: prcId,
+          prcValidUntil: prcValidUntil,
+          postNominal: postNominal
         });
       }
     }

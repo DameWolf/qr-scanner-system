@@ -17,6 +17,9 @@
 		statusOut: string;
 		scanTimeOut: string | null;
 		isHighlighted: boolean;
+		prcId: string;
+		prcValidUntil: string | null;
+		postNominal: string;
 	}
 
 	let guests = $state<Guest[]>([]);
@@ -193,17 +196,39 @@
 
 	// ── Report Download ──────────────────────────────────────────────
 
-	function getFamilyName(fullName: string): string {
-		// Extract last word of the full name as the family name for sorting
+	/**
+	 * Extracts the family (last) name from a full name string for sorting.
+	 * Handles compound surnames separated by spaces (e.g., "Dela Cruz").
+	 * Assumes format: GIVEN [MIDDLE] FAMILY.
+	 */
+	function extractFamilyName(fullName: string): string {
 		const parts = fullName.trim().split(/\s+/);
-		return parts[parts.length - 1]?.toLowerCase() ?? '';
+		if (parts.length === 0) return '';
+		// Last word is the family name
+		return (parts[parts.length - 1] ?? '').toLowerCase();
+	}
+
+	/**
+	 * Formats a guest name for the report:
+	 * "FAMILY NAME, GIVEN [MIDDLE], POST-NOMINAL"
+	 * All uppercase. e.g.: "DELA CRUZ, JUAN MIGUEL, RMT, MD, PHD"
+	 */
+	function formatReportName(g: Guest): string {
+		const parts = g.name.trim().split(/\s+/);
+		const family = parts.length > 1 ? parts[parts.length - 1] : parts[0];
+		const given = parts.length > 1 ? parts.slice(0, parts.length - 1).join(' ') : '';
+
+		let formatted = family;
+		if (given) formatted += ', ' + given;
+		if (g.postNominal && g.postNominal.trim()) formatted += ', ' + g.postNominal.trim();
+		return formatted.toUpperCase();
 	}
 
 	function formatDatetime(iso: string | null): string {
 		if (!iso) return '';
 		try {
 			const d = new Date(iso);
-			if (isNaN(d.getTime())) return iso;
+			if (isNaN(d.getTime())) return iso.toUpperCase();
 			return d.toLocaleString('en-US', {
 				year: 'numeric',
 				month: 'short',
@@ -211,26 +236,28 @@
 				hour: '2-digit',
 				minute: '2-digit',
 				hour12: true
-			});
+			}).toUpperCase();
 		} catch {
-			return iso;
+			return iso.toUpperCase();
 		}
 	}
 
 	function formatPayment(proof: string): string {
-		if (!proof || proof === 'NOT PAID') return 'Not Paid';
-		if (proof === 'CASH PAID ONSITE') return 'Cash (Onsite)';
-		return 'Paid';
+		if (!proof || proof === 'NOT PAID') return 'NOT PAID';
+		if (proof === 'CASH PAID ONSITE') return 'CASH (ONSITE)';
+		return 'PAID';
 	}
 
 	function buildReportRows() {
 		return [...guests]
-			.sort((a, b) => getFamilyName(a.name).localeCompare(getFamilyName(b.name)))
+			.sort((a, b) => extractFamilyName(a.name).localeCompare(extractFamilyName(b.name), 'en', { sensitivity: 'base' }))
 			.map((g, idx) => ({
 				'#': idx + 1,
-				'Full Name': g.name,
-				'Email': g.email,
-				'Category': g.category || g.type || '',
+				'Full Name': formatReportName(g),
+				'Email': g.email.toUpperCase(),
+				'Category': (g.category || g.type || '').toUpperCase(),
+				'PRC ID Number': g.prcId ? g.prcId.toUpperCase() : '—',
+				'PRC ID Valid Until': g.prcValidUntil ? formatDatetime(g.prcValidUntil) : '—',
 				'Payment': formatPayment(g.proofOfPayment),
 				'Check-In Time': formatDatetime(g.scanTime),
 				'Check-Out Time': formatDatetime(g.scanTimeOut)
@@ -249,6 +276,8 @@
 				{ wch: 30 }, // Full Name
 				{ wch: 32 }, // Email
 				{ wch: 14 }, // Category
+				{ wch: 18 }, // PRC ID Number
+				{ wch: 20 }, // PRC ID Valid Until
 				{ wch: 14 }, // Payment
 				{ wch: 22 }, // Check-In Time
 				{ wch: 22 }  // Check-Out Time
@@ -277,9 +306,11 @@
 					(r) =>
 						`<tr>
 							<td>${r['#']}</td>
-							<td>${r['Full Name']}</td>
+							<td class="name-cell">${r['Full Name']}</td>
 							<td>${r['Email']}</td>
 							<td>${r['Category']}</td>
+							<td class="prc-id">${r['PRC ID Number']}</td>
+							<td class="prc-valid">${r['PRC ID Valid Until']}</td>
 							<td class="pay-${r['Payment'].toLowerCase().replace(/[^a-z]/g, '')}">${r['Payment']}</td>
 							<td>${r['Check-In Time'] || '—'}</td>
 							<td>${r['Check-Out Time'] || '—'}</td>
@@ -302,12 +333,15 @@
   .report-meta span { display: block; }
   table { width: 100%; border-collapse: collapse; }
   thead tr { background: #800000; color: white; }
-  thead th { padding: 7px 8px; text-align: left; font-size: 9.5px; font-weight: 700; letter-spacing: 0.3px; }
+  thead th { padding: 7px 8px; text-align: left; font-size: 9.5px; font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase; }
   tbody tr:nth-child(even) { background: #fff0f0; }
   tbody tr:nth-child(odd) { background: #ffffff; }
-  tbody td { padding: 6px 8px; border-bottom: 1px solid #f0c0c0; font-size: 9.5px; vertical-align: top; }
+  tbody td { padding: 6px 8px; border-bottom: 1px solid #f0c0c0; font-size: 9.5px; vertical-align: top; text-transform: uppercase; }
+  .name-cell { font-weight: 600; letter-spacing: 0.02em; }
   .pay-notpaid { color: #b91c1c; font-weight: 600; }
   .pay-paid, .pay-cashonsite { color: #166534; font-weight: 600; }
+  .prc-id { font-family: monospace; font-size: 9px; color: #444; }
+  .prc-valid { color: #555; font-size: 9px; }
   .total-row { margin-top: 10px; font-size: 10px; color: #666; }
 </style>
 </head>
@@ -325,13 +359,15 @@
   <table>
     <thead>
       <tr>
-        <th style="width:28px">#</th>
-        <th style="width:22%">Full Name</th>
-        <th style="width:24%">Email</th>
-        <th style="width:10%">Category</th>
-        <th style="width:10%">Payment</th>
-        <th style="width:17%">Check-In Time</th>
-        <th style="width:17%">Check-Out Time</th>
+        <th style="width:24px">#</th>
+        <th style="width:18%">Full Name</th>
+        <th style="width:18%">Email</th>
+        <th style="width:8%">Category</th>
+        <th style="width:11%">PRC ID Number</th>
+        <th style="width:10%">PRC Valid Until</th>
+        <th style="width:8%">Payment</th>
+        <th style="width:13%">Check-In Time</th>
+        <th style="width:13%">Check-Out Time</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -567,7 +603,10 @@
 							proofOfPayment: r.proofOfPayment || 'NOT PAID',
 							statusOut: r.statusOut || (match ? match.statusOut || '' : ''),
 							scanTimeOut: match ? match.scanTimeOut || null : null,
-							isHighlighted: !!r.isHighlighted
+							isHighlighted: !!r.isHighlighted,
+							prcId: r.prcId || '',
+							prcValidUntil: r.prcValidUntil || null,
+							postNominal: r.postNominal || ''
 						};
 					});
 				} else if (data.attendees) {
@@ -582,7 +621,10 @@
 						proofOfPayment: a.proofOfPayment || 'NOT PAID',
 						statusOut: a.statusOut || '',
 						scanTimeOut: a.scanTimeOut || null,
-						isHighlighted: !!a.isHighlighted
+						isHighlighted: !!a.isHighlighted,
+						prcId: a.prcId || '',
+						prcValidUntil: a.prcValidUntil || null,
+						postNominal: a.postNominal || ''
 					}));
 				}
 			}
@@ -656,8 +698,6 @@
 								Clear All Status
 							{/if}
 						</button>
-
-						<button
 
 						<button
 							class="download-report-btn"
@@ -821,6 +861,7 @@
 									<th class="col-name">Name</th>
 									<th class="col-payment">Payment</th>
 									<th class="col-category">Category</th>
+									<th class="col-prc">PRC ID</th>
 									<th class="col-time">Time</th>
 									<th class="col-status">Status</th>
 									<th class="col-signout">ATTENDED</th>
@@ -864,6 +905,7 @@
 												<div class="guest-email">{guest.email}</div>
 											{/if}
 										</td>
+
 										<td class="col-payment">
 											{#if isPaid(guest.proofOfPayment)}
 												<span class="payment-badge paid">Paid</span>
@@ -879,7 +921,17 @@
 											{:else if guest.category === 'Student'}
 												<span class="category-badge student">Student</span>
 											{:else}
-												<span class="category-badge unknown">{guest.category || '—'}</span>
+												<span class="category-badge unknown">{guest.category || guest.type || '—'}</span>
+											{/if}
+										</td>
+										<td class="col-prc">
+											{#if guest.prcId}
+												<div class="prc-id-number">{guest.prcId}</div>
+												{#if guest.prcValidUntil}
+													<div class="prc-valid-until">Until: {formatDatetime(guest.prcValidUntil)}</div>
+												{/if}
+											{:else}
+												<span class="prc-none">—</span>
 											{/if}
 										</td>
 										<td class="col-time">
@@ -1770,6 +1822,31 @@
 		font-size: 12px;
 		margin-top: 2px;
 		word-break: break-all;
+	}
+
+	.col-prc {
+		width: 140px;
+		min-width: 120px;
+	}
+
+	.prc-id-number {
+		font-family: 'Courier New', Courier, monospace;
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--text-primary);
+		letter-spacing: 0.02em;
+	}
+
+	.prc-valid-until {
+		font-size: 11px;
+		color: var(--text-secondary);
+		margin-top: 2px;
+	}
+
+	.prc-none {
+		color: var(--text-secondary);
+		opacity: 0.5;
+		font-size: 13px;
 	}
 
 	.col-time {
